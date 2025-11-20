@@ -5,5 +5,4 @@ faster-whisper
 torch
 torchaudio
 psutil
-
 python-dotenv

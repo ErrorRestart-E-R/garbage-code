@@ -6,7 +6,6 @@ import torch
 import psutil
 import os
 
-
 def run_stt_process(audio_queue, result_queue, command_queue):
     """
     This function runs in a separate process.
