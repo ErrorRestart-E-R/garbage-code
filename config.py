@@ -26,3 +26,14 @@ RING_BUFFER_SIZE = 10 # ~320ms context
 
 # Cleanup Configuration
 USER_TIMEOUT_SECONDS = 60
+
+# LLM Configuration
+# Chat LLM (The main persona)
+CHAT_API_BASE_URL = "http://localhost:1234/v1"
+CHAT_API_KEY = "lm-studio"
+CHAT_MODEL_NAME = "local-model" # Replace with specific model name if needed
+
+# Judge LLM (The decision maker)
+JUDGE_API_BASE_URL = "http://localhost:1234/v1"
+JUDGE_API_KEY = "lm-studio"
+JUDGE_MODEL_NAME = "local-model" # Can be a smaller/faster model

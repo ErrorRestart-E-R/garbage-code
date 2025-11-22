@@ -7,3 +7,5 @@ torchaudio
 psutil
 python-dotenv
 openai
+chromadb
+sentence-transformers
