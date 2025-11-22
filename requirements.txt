@@ -6,3 +6,4 @@ torch
 torchaudio
 psutil
 python-dotenv
+openai
