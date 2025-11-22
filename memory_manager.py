@@ -3,17 +3,19 @@ from chromadb.utils import embedding_functions
 import datetime
 import os
 
+import config
+
 class MemoryManager:
-    def __init__(self, db_path="./memory_db"):
+    def __init__(self, db_path=config.MEMORY_DB_PATH):
         self.client = chromadb.PersistentClient(path=db_path)
         
         # Use a lightweight embedding model
         self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name="all-MiniLM-L6-v2"
+            model_name=config.EMBEDDING_MODEL_NAME
         )
         
         self.collection = self.client.get_or_create_collection(
-            name="neuro_memory",
+            name=config.MEMORY_COLLECTION_NAME,
             embedding_function=self.embedding_fn
         )
 

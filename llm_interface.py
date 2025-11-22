@@ -64,7 +64,7 @@ async def should_respond(user_input, system_context):
                 ],
                 temperature=0.1, 
             ),
-            timeout=5.0 # 5 second timeout for Judge
+            timeout=config.JUDGE_TIMEOUT # Timeout for Judge
         )
         response = completion.choices[0].message.content.strip().upper()
         return "Y" in response
@@ -89,7 +89,7 @@ async def is_important(user_input):
                 ],
                 temperature=0.1, 
             ),
-            timeout=10.0 # 10 second timeout for Importance (less critical)
+            timeout=config.IMPORTANCE_TIMEOUT # Timeout for Importance (less critical)
         )
         response = completion.choices[0].message.content.strip().upper()
         return "Y" in response

@@ -77,22 +77,29 @@ async def process_results():
                     # 2. Background Memory Task
                     bot.loop.create_task(process_memory_background(user_name, user_text))
                     
-                    # 3. Retrieve Long-term Memories
-                    memory_context = memory_manager.get_memory_context(user_text, user_name)
-                    
-                    # 4. Build Full Context
-                    system_context = conversation_manager.get_system_context()
-                    if memory_context:
-                        system_context += memory_context
-                    
+                    # 3. Parallel Execution: RAG Search & Judge LLM
                     llm_input_json = json.dumps({
                         "name": user_name,
                         "message": user_text
                     }, ensure_ascii=False)
+                    
+                    system_context = conversation_manager.get_system_context()
+                    
+                    # RAG is blocking (ChromaDB), so we run it in a thread.
+                    rag_task = asyncio.to_thread(memory_manager.get_memory_context, user_text, user_name)
+                    # Judge is async.
+                    judge_task = should_respond(llm_input_json, system_context)
+                    
+                    # Wait for both to finish
+                    memory_context, should_reply = await asyncio.gather(rag_task, judge_task)
 
-                    # 5. Judge & Respond
-                    if await should_respond(llm_input_json, system_context):
+                    # 4. Judge & Respond
+                    if should_reply:
                         print("Neuro decided to reply.")
+                        
+                        # Add memory context if available
+                        if memory_context:
+                            system_context += memory_context
                         
                         # Find Voice Client for AudioPlayer
                         vc = None
