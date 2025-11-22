@@ -6,14 +6,16 @@ import asyncio
 chat_client = openai.AsyncOpenAI(base_url=config.CHAT_API_BASE_URL, api_key=config.CHAT_API_KEY)
 judge_client = openai.AsyncOpenAI(base_url=config.JUDGE_API_BASE_URL, api_key=config.JUDGE_API_KEY)
 
+# Please do not respond with absurdly long answer.
+
 # System Prompt
 SYSTEM_PROMPT = """
 You are "Neuro", an AI VTuber. 
 
-Please do not respond with absurdly long answer.
 Do not try to include motion or any other non-textual content.
 Do not try to include emojis.
 Do not try to include trailing questions if not necessary.
+Please respond in Korean only.
 """
 
 # Judge System Prompt
@@ -112,3 +114,27 @@ async def get_neuro_response(user_input_json, system_context):
     except Exception as e:
         print(f"LLM Error: {e}")
         return None
+
+async def get_neuro_response_stream(user_input_json, system_context):
+    """
+    Sends the user input to the LLM and yields the response chunks asynchronously.
+    """
+    try:
+        stream = await chat_client.chat.completions.create(
+            model=config.CHAT_MODEL_NAME, 
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT + "\n" + system_context},
+                {"role": "user", "content": user_input_json}
+            ],
+            temperature=0.7,
+            stream=True
+        )
+        
+        async for chunk in stream:
+            content = chunk.choices[0].delta.content
+            if content:
+                yield content
+                
+    except Exception as e:
+        print(f"LLM Stream Error: {e}")
+        yield None

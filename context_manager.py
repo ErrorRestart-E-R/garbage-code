@@ -2,7 +2,7 @@ from collections import deque
 import datetime
 
 class ConversationManager:
-    def __init__(self, max_history=20):
+    def __init__(self, max_history=10):
         self.participants = set()
         self.history = deque(maxlen=max_history)
         self.last_speaker = None

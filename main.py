@@ -1,7 +1,5 @@
 import discord
 from discord.ext import commands
-import discord
-from discord.ext import commands
 import discord.ext.voice_recv
 import multiprocessing
 import queue
@@ -14,8 +12,9 @@ import asyncio
 from stt_handler import run_stt_process
 from context_manager import ConversationManager
 from memory_manager import MemoryManager
-from llm_interface import should_respond, is_important, get_neuro_response
-from audio_utils import STTSink, setup_audio_logging
+from llm_interface import should_respond, is_important, get_neuro_response_stream
+from audio_utils import STTSink, setup_audio_logging, AudioPlayer
+from tts_handler import tts_handler
 
 # Setup Logging
 setup_audio_logging()
@@ -23,6 +22,7 @@ setup_audio_logging()
 # Initialize Managers
 conversation_manager = ConversationManager()
 memory_manager = MemoryManager()
+tts = tts_handler(config.TTS_SERVER_URL, config.TTS_REFERENCE_FILE, config.TTS_REFERENCE_PROMPT, config.TTS_REFERENCE_PROMPT_LANG)
 
 # Token
 TOKEN = config.DISCORD_TOKEN
@@ -93,21 +93,61 @@ async def process_results():
                     # 5. Judge & Respond
                     if await should_respond(llm_input_json, system_context):
                         print("Neuro decided to reply.")
-                        llm_response_text = await get_neuro_response(llm_input_json, system_context)
                         
-                        if llm_response_text:
-                            print(f"Neuro said: {llm_response_text}")
-                            conversation_manager.add_message("Neuro", llm_response_text)
+                        # Find Voice Client for AudioPlayer
+                        vc = None
+                        if bot.voice_clients:
+                            vc = bot.voice_clients[0] 
+                        
+                        if vc:
+                            player = AudioPlayer(vc, bot.loop)
                             
-                            # Clear STT queue during response
-                            while not result_queue.empty():
-                                try:
-                                    result_queue.get_nowait()
-                                except queue.Empty:
-                                    break
-                            print("STT queue cleared after response.")
+                            full_response = ""
+                            buffer = ""
+                            print("Neuro is thinking (streaming)...")
+                            
+                            llm_chunks = 0
+                            
+                            async for chunk in get_neuro_response_stream(llm_input_json, system_context):
+                                if chunk:
+                                    full_response += chunk
+                                    buffer += chunk
+
+                                    MIN_WORD_COUNT = config.TTS_EARLY_MIN_WORD_COUNT if llm_chunks <= config.TTS_EARLY_CHUNKS else config.TTS_MIN_WORD_COUNT
+
+                                    # Split by space to check word count
+                                    if len(buffer.split()) >= MIN_WORD_COUNT:
+                                        llm_chunks += 1
+                                        last_space_index = buffer.rfind(' ')
+                                        if last_space_index != -1:
+                                            sentence = buffer[:last_space_index]
+                                            buffer = buffer[last_space_index+1:]
+                                            
+                                            print(f"\n[TTS] Processing chunk: {sentence}")
+                                            wav_data = await tts.get_async(sentence, config.TTS_LANG)
+                                            if wav_data:
+                                                await player.add_audio(wav_data)
+                            
+                            # Process remaining buffer
+                            if buffer.strip():
+                                print(f"\n[TTS] Processing final chunk: {buffer.strip()}")
+                                wav_data = await tts.get_async(buffer.strip(), config.TTS_LANG)
+                                if wav_data:
+                                    await player.add_audio(wav_data)
+                                    
+                            print("\nNeuro response complete.")
+                            conversation_manager.add_message("Neuro", full_response)
                         else:
-                            print("No response from LLM.")
+                            print("Neuro wants to reply but is not in a voice channel.")
+                            
+                        # Clear STT queue during response
+                        while not result_queue.empty():
+                            try:
+                                result_queue.get_nowait()
+                            except queue.Empty:
+                                break
+                        print("STT queue cleared after response.")
+
                     else:
                         print("Neuro decided NOT to reply.")
             else:
