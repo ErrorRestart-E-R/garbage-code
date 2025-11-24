@@ -64,8 +64,10 @@ graph TD
 git clone https://github.com/your-repo/discord-stt-bot.git
 cd discord-stt-bot
 pip install -r requirements.txt
+pip install lmstudio
 ```
 > *Note: This installs `torch` and `faster-whisper`. The total size may exceed 2GB.*
+> LM Studio Python SDK 설치 및 사용법은 [공식 문서](https://lmstudio.ai/docs/python)를 참고하세요.
 
 ### 2. Configuration
 Create a `.env` file in the root directory:

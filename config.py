@@ -14,7 +14,6 @@ STT_DEVICE = "cuda"
 STT_COMPUTE_TYPE = "float16"
 STT_LANGUAGE = "ko"
 STT_BEAM_SIZE = 1
-STT_SILENCE_TIMEOUT = 0.5 # Seconds to wait after silence before processing
 
 # VAD Configuration
 VAD_REPO_OR_DIR = 'snakers4/silero-vad'
@@ -44,15 +43,3 @@ TTS_REFERENCE_PROMPT = "どっちも彼女さ。毎回聞かれるたびに、�
 TTS_REFERENCE_PROMPT_LANG = "ja"
 TTS_REFERENCE_FILE = "reference.wav"
 TTS_LANG = "ko"
-TTS_EARLY_CHUNKS = 1
-TTS_EARLY_MIN_WORD_COUNT = 4
-TTS_MIN_WORD_COUNT = 15
-
-# Memory Configuration
-MEMORY_DB_PATH = "./memory_db"
-MEMORY_COLLECTION_NAME = "neuro_memory"
-EMBEDDING_MODEL_NAME = "paraphrase-multilingual-mpnet-base-v2"
-
-# LLM Timeouts
-JUDGE_TIMEOUT = 5.0
-IMPORTANCE_TIMEOUT = 10.0

@@ -64,7 +64,7 @@ async def should_respond(user_input, system_context):
                 ],
                 temperature=0.1, 
             ),
-            timeout=config.JUDGE_TIMEOUT # Timeout for Judge
+            timeout=5.0 # 5 second timeout for Judge
         )
         response = completion.choices[0].message.content.strip().upper()
         return "Y" in response
@@ -89,7 +89,7 @@ async def is_important(user_input):
                 ],
                 temperature=0.1, 
             ),
-            timeout=config.IMPORTANCE_TIMEOUT # Timeout for Importance (less critical)
+            timeout=10.0 # 10 second timeout for Importance (less critical)
         )
         response = completion.choices[0].message.content.strip().upper()
         return "Y" in response
@@ -97,23 +97,7 @@ async def is_important(user_input):
         print(f"Importance Judge Error: {e}")
         return False
 
-async def get_neuro_response(user_input_json, system_context):
-    """
-    Sends the user input to the LLM and retrieves the response asynchronously.
-    """
-    try:
-        completion = await chat_client.chat.completions.create(
-            model=config.CHAT_MODEL_NAME, 
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT + "\n" + system_context},
-                {"role": "user", "content": user_input_json}
-            ],
-            temperature=0.7,
-        )
-        return completion.choices[0].message.content
-    except Exception as e:
-        print(f"LLM Error: {e}")
-        return None
+
 
 async def get_neuro_response_stream(user_input_json, system_context):
     """

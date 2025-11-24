@@ -47,7 +47,6 @@ def run_stt_process(audio_queue, result_queue, command_queue):
     user_speech_buffers = {} # Accumulated speech segments
     user_ring_buffers = {}   # Pre-speech context (Ring Buffer)
     user_last_activity = {}  # Timestamp for cleanup
-    user_silence_start_time = {} # Timestamp for silence start
     
     # VAD State per user
     user_vad_iterators = {} 
@@ -111,9 +110,6 @@ def run_stt_process(audio_queue, result_queue, command_queue):
                 
                 if is_speech:
                     # Speech detected.
-                    # Reset silence timer
-                    user_silence_start_time[user_id] = None
-                    
                     # If this is the start of a new speech segment, prepend the ring buffer context.
                     if len(user_speech_buffers[user_id]) == 0:
                          for prev_frame in user_ring_buffers[user_id]:
@@ -124,19 +120,11 @@ def run_stt_process(audio_queue, result_queue, command_queue):
                 else:
                     # Silence detected.
                     if len(user_speech_buffers[user_id]) > 0:
-                        # Check if we have waited long enough
-                        if user_silence_start_time.get(user_id) is None:
-                            user_silence_start_time[user_id] = time.time()
+                        # End of speech segment -> Transcribe
+                        audio_to_transcribe = user_speech_buffers[user_id][:]
+                        user_speech_buffers[user_id] = bytearray()
                         
-                        silence_duration = time.time() - user_silence_start_time[user_id]
-                        
-                        if silence_duration > config.STT_SILENCE_TIMEOUT:
-                            # End of speech segment -> Transcribe
-                            audio_to_transcribe = user_speech_buffers[user_id][:]
-                            user_speech_buffers[user_id] = bytearray()
-                            user_silence_start_time[user_id] = None # Reset
-                            
-                            transcribe_and_send(model, user_id, audio_to_transcribe, result_queue)
+                        transcribe_and_send(model, user_id, audio_to_transcribe, result_queue)
                     
                     # Keep recent frames in ring buffer for context
                     user_ring_buffers[user_id].append(frame)
