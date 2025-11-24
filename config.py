@@ -39,7 +39,7 @@ JUDGE_API_BASE_URL = "http://localhost:1234/v1"
 JUDGE_API_KEY = "lm-studio"
 JUDGE_MODEL_NAME = "local-model" # Can be a smaller/faster model
 
-TTS_SERVER_URL = "http://192.168.45.78:9880/tts"
+TTS_SERVER_URL = "http://192.168.45.49:9880/tts"
 TTS_REFERENCE_PROMPT = "どっちも彼女さ。毎回聞かれるたびに、適当に思いついた通り名を名乗ってたんだ…"
 TTS_REFERENCE_PROMPT_LANG = "ja"
 TTS_REFERENCE_FILE = "reference.wav"
