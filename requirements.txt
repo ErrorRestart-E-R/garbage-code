@@ -1,0 +1,14 @@
+discord.py
+lmstudio
+faster-whisper
+torch
+torchaudio
+chromadb
+scipy
+pydub
+requests
+discord-ext-voice-recv @ git+https://github.com/imayhaveborkedit/discord-ext-voice-recv
+numpy
+psutil
+python-dotenv
+sentence-transformers

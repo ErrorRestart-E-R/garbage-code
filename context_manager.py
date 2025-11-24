@@ -1,10 +1,8 @@
 from collections import deque
 import datetime
 
-import config
-
 class ConversationManager:
-    def __init__(self, max_history=config.MAX_HISTORY_MESSAGES):
+    def __init__(self, max_history=10):
         self.participants = set()
         self.history = deque(maxlen=max_history)
         self.last_speaker = None
