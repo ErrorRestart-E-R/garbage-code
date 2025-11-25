@@ -7,17 +7,23 @@ import datetime
 import config
 import json
 import asyncio
+import sys
+import logging
 
 # Custom Modules
 from stt_handler import run_stt_process
 from context_manager import ConversationManager
 from memory_manager import MemoryManager
 from llm_interface import should_respond, is_important, get_neuro_response_stream
-from audio_utils import STTSink, setup_audio_logging, AudioPlayer
+from audio_utils import STTSink, AudioPlayer
 from tts_handler import tts_handler
+from logger import setup_logger
 
 # Setup Logging
-setup_audio_logging()
+logger = setup_logger(__name__, config.LOG_FILE, config.LOG_LEVEL)
+
+# Suppress verbose RTCP packet logs from voice_recv
+logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.WARNING)
 
 # Initialize Managers
 conversation_manager = ConversationManager()
@@ -45,13 +51,13 @@ async def process_memory_background(user_name, user_text):
     """
     try:
         if await is_important(user_text):
-            print(f"[Background] Importance Judge: Saving memory for {user_name}")
+            logger.debug(f"Saving memory for {user_name}")
             memory_manager.save_memory(user_name, user_text)
     except Exception as e:
-        print(f"[Background] Memory Task Error: {e}")
+        logger.error(f"Memory save error: {e}")
 
 async def process_results():
-    print("Result processing task started.")
+    logger.info("Result processing started")
     while True:
         try:
             if result_queue and not result_queue.empty():
@@ -69,7 +75,7 @@ async def process_results():
                         user_name = f"User_{user_id}"
                 
                 if user_text:
-                    print(f"{user_name} said: {user_text}")
+                    logger.info(f"{user_name}: {user_text}")
                     
                     # 1. Update Short-term Context
                     conversation_manager.add_message(user_name, user_text)
@@ -92,7 +98,7 @@ async def process_results():
 
                     # 5. Judge & Respond
                     if await should_respond(llm_input_json, system_context):
-                        print("Neuro decided to reply.")
+                        logger.debug("Neuro responding")
                         
                         # Find Voice Client for AudioPlayer
                         vc = None
@@ -104,11 +110,9 @@ async def process_results():
                             
                             full_response = ""
                             buffer = ""
-                            print("Neuro is thinking (streaming)...")
                             
                             async for chunk in get_neuro_response_stream(llm_input_json, system_context):
                                 if chunk:
-                                    print(chunk, end="", flush=True)
                                     full_response += chunk
                                     buffer += chunk
                                     
@@ -116,7 +120,7 @@ async def process_results():
                                     if any(p in buffer for p in ['.', '!', '?', '\n']):
                                         if buffer.strip() and buffer.strip()[-1] in ['.', '!', '?', '\n']:
                                             sentence = buffer.strip()
-                                            print(f"\n[TTS] Processing chunk: {sentence}")
+                                            logger.debug(f"TTS: {sentence[:30]}...")
                                             
                                             # Send to TTS (Async but sequential in this loop)
                                             wav_data = await tts.get_async(sentence, "ko")
@@ -127,15 +131,15 @@ async def process_results():
                             
                             # Process remaining buffer
                             if buffer.strip():
-                                print(f"\n[TTS] Processing final chunk: {buffer.strip()}")
+                                logger.debug(f"TTS final: {buffer.strip()[:30]}...")
                                 wav_data = await tts.get_async(buffer.strip(), "ko")
                                 if wav_data:
                                     await player.add_audio(wav_data)
-                                    
-                            print("\nNeuro response complete.")
+                            
+                            logger.info(f"Neuro: {full_response}")
                             conversation_manager.add_message("Neuro", full_response)
                         else:
-                            print("Neuro wants to reply but is not in a voice channel.")
+                            logger.warning("Not in voice channel")
                             
                         # Clear STT queue during response
                         while not result_queue.empty():
@@ -143,21 +147,20 @@ async def process_results():
                                 result_queue.get_nowait()
                             except queue.Empty:
                                 break
-                        print("STT queue cleared after response.")
+                        logger.debug("STT queue cleared")
 
                     else:
-                        print("Neuro decided NOT to reply.")
+                        logger.debug("Neuro not responding")
             else:
                 await discord.utils.sleep_until(discord.utils.utcnow() + datetime.timedelta(milliseconds=10))
                 await asyncio.sleep(0.01)
         except Exception as e:
-            print(f"CRITICAL Error in result loop: {e}")
+            logger.error(f"Critical error in result loop: {e}", exc_info=True)
             await asyncio.sleep(1)
 
 @bot.event
 async def on_ready():
-    print(f'Logged in as {bot.user} (ID: {bot.user.id})')
-    print('------')
+    logger.info(f"Bot started: {bot.user}")
     bot.loop.create_task(process_results())
 
 @bot.event
@@ -167,10 +170,10 @@ async def on_voice_state_update(member, before, after):
 
     if after.channel and after.channel.guild.voice_client and after.channel == after.channel.guild.voice_client.channel:
         conversation_manager.add_participant(member.display_name)
-        print(f"Participant added: {member.display_name}")
+        logger.info(f"{member.display_name} joined voice")
     elif before.channel and before.channel.guild.voice_client and before.channel == before.channel.guild.voice_client.channel:
         conversation_manager.remove_participant(member.display_name)
-        print(f"Participant removed: {member.display_name}")
+        logger.info(f"{member.display_name} left voice")
 
     if before.channel and not after.channel:
         if command_queue:
@@ -205,6 +208,15 @@ async def leave(ctx):
         await ctx.send("I am not in a voice channel.")
 
 if __name__ == "__main__":
+    from all_api_testing import run_all_tests
+    
+    print("\n🚀 Starting AI VTuber Bot...\n")
+    if not run_all_tests():
+        print("\n❌ Pre-flight checks failed.\n")
+        sys.exit(1)
+    
+    print("✓ All systems operational\n")
+    
     multiprocessing.freeze_support()
     
     audio_queue = multiprocessing.Queue()
@@ -216,13 +228,14 @@ if __name__ == "__main__":
     stt_process.start()
     
     if not TOKEN:
-        print("Error: DISCORD_TOKEN not found.")
+        logger.error("DISCORD_TOKEN not found")
+        sys.exit(1)
     else:
         try:
             bot.run(TOKEN)
         except KeyboardInterrupt:
             pass
         finally:
-            print("Terminating STT Process...")
+            logger.info("Shutting down...")
             stt_process.terminate()
             stt_process.join()

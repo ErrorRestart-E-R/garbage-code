@@ -1,5 +1,6 @@
 import os
 from dotenv import load_dotenv
+import logging
 
 # Load environment variables
 load_dotenv()
@@ -28,16 +29,18 @@ RING_BUFFER_SIZE = 10 # ~320ms context
 USER_TIMEOUT_SECONDS = 60
 
 # LLM Configuration
-# Chat LLM (The main persona)
-CHAT_API_BASE_URL = "http://localhost:1234/v1"
-CHAT_API_KEY = "lm-studio"
-CHAT_MODEL_NAME = "local-model" # Replace with specific model name if needed
+# Ollama SDK Configuration
+OLLAMA_HOST = "http://localhost:11434"
 
-# Judge LLM (The decision maker)
-JUDGE_API_BASE_URL = "http://localhost:1234/v1"
-JUDGE_API_KEY = "lm-studio"
-JUDGE_MODEL_NAME = "local-model" # Can be a smaller/faster model
+# LLM Model Configuration
+# Specify the model to use with Ollama
+LLM_MODEL_NAME = "gemma3:27b" 
 
+# Logging Configuration
+LOG_LEVEL = logging.INFO  # Change to logging.DEBUG for detailed logs
+LOG_FILE = None  # Set to "bot.log" to enable file logging
+
+# TTS Configuration
 TTS_SERVER_URL = "http://192.168.45.49:9880/tts"
 TTS_REFERENCE_PROMPT = "どっちも彼女さ。毎回聞かれるたびに、適当に思いついた通り名を名乗ってたんだ…"
 TTS_REFERENCE_PROMPT_LANG = "ja"

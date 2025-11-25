@@ -1,12 +1,10 @@
-import openai
+import ollama
 import config
 import asyncio
+from logger import setup_logger
 
-# Initialize Async Clients
-chat_client = openai.AsyncOpenAI(base_url=config.CHAT_API_BASE_URL, api_key=config.CHAT_API_KEY)
-judge_client = openai.AsyncOpenAI(base_url=config.JUDGE_API_BASE_URL, api_key=config.JUDGE_API_KEY)
-
-# Please do not respond with absurdly long answer.
+# Setup logger
+logger = setup_logger(__name__, config.LOG_FILE, config.LOG_LEVEL)
 
 # System Prompt
 SYSTEM_PROMPT = """
@@ -55,24 +53,24 @@ async def should_respond(user_input, system_context):
     Decides whether to respond to the user input using the Judge LLM.
     """
     try:
-        completion = await asyncio.wait_for(
-            judge_client.chat.completions.create(
-                model=config.JUDGE_MODEL_NAME, 
-                messages=[
-                    {"role": "system", "content": JUDGE_SYSTEM_PROMPT + "\n" + system_context},
-                    {"role": "user", "content": user_input}
-                ],
-                temperature=0.1, 
-            ),
-            timeout=5.0 # 5 second timeout for Judge
-        )
-        response = completion.choices[0].message.content.strip().upper()
-        return "Y" in response
-    except asyncio.TimeoutError:
-        print("Judge LLM Timed out. Defaulting to False.")
-        return False
+        client = ollama.AsyncClient(host=config.OLLAMA_HOST)
+        
+        messages = [
+            {'role': 'system', 'content': JUDGE_SYSTEM_PROMPT + "\n" + system_context},
+            {'role': 'user', 'content': user_input}
+        ]
+        
+        response = await client.chat(model=config.LLM_MODEL_NAME, messages=messages, options={"temperature": 0.1})
+        
+        # Handle both object and dict response types
+        if hasattr(response, 'message'):
+            response_text = response.message.content.strip().upper()
+        else:
+            response_text = response['message']['content'].strip().upper()
+            
+        return "Y" in response_text
     except Exception as e:
-        print(f"Judge LLM Error: {e}")
+        logger.error(f"Judge error: {e}")
         return False
 
 async def is_important(user_input):
@@ -80,23 +78,25 @@ async def is_important(user_input):
     Decides if the input is worth saving to memory.
     """
     try:
-        completion = await asyncio.wait_for(
-            judge_client.chat.completions.create(
-                model=config.JUDGE_MODEL_NAME, 
-                messages=[
-                    {"role": "system", "content": IMPORTANCE_SYSTEM_PROMPT},
-                    {"role": "user", "content": user_input}
-                ],
-                temperature=0.1, 
-            ),
-            timeout=10.0 # 10 second timeout for Importance (less critical)
-        )
-        response = completion.choices[0].message.content.strip().upper()
-        return "Y" in response
+        client = ollama.AsyncClient(host=config.OLLAMA_HOST)
+        
+        messages = [
+            {'role': 'system', 'content': IMPORTANCE_SYSTEM_PROMPT},
+            {'role': 'user', 'content': user_input}
+        ]
+        
+        response = await client.chat(model=config.LLM_MODEL_NAME, messages=messages, options={"temperature": 0.1})
+        
+        # Handle both object and dict response types
+        if hasattr(response, 'message'):
+            response_text = response.message.content.strip().upper()
+        else:
+            response_text = response['message']['content'].strip().upper()
+            
+        return "Y" in response_text
     except Exception as e:
-        print(f"Importance Judge Error: {e}")
+        logger.debug(f"Importance judge error: {e}")
         return False
-
 
 
 async def get_neuro_response_stream(user_input_json, system_context):
@@ -104,21 +104,23 @@ async def get_neuro_response_stream(user_input_json, system_context):
     Sends the user input to the LLM and yields the response chunks asynchronously.
     """
     try:
-        stream = await chat_client.chat.completions.create(
-            model=config.CHAT_MODEL_NAME, 
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT + "\n" + system_context},
-                {"role": "user", "content": user_input_json}
-            ],
-            temperature=0.7,
-            stream=True
-        )
+        client = ollama.AsyncClient(host=config.OLLAMA_HOST)
         
-        async for chunk in stream:
-            content = chunk.choices[0].delta.content
+        messages = [
+            {'role': 'system', 'content': SYSTEM_PROMPT + "\n" + system_context},
+            {'role': 'user', 'content': user_input_json}
+        ]
+        
+        async for part in await client.chat(model=config.LLM_MODEL_NAME, messages=messages, stream=True, options={"temperature": 0.7}):
+            # Handle both object and dict response types
+            if hasattr(part, 'message'):
+                content = part.message.content
+            else:
+                content = part.get('message', {}).get('content')
+                
             if content:
                 yield content
-                
+                    
     except Exception as e:
-        print(f"LLM Stream Error: {e}")
+        logger.error(f"LLM stream error: {e}")
         yield None

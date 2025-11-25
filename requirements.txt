@@ -1,0 +1,6 @@
+lmstudio
+discord.py
+python-dotenv
+faster-whisper
+requests
+aiohttp
