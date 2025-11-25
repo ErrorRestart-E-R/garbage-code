@@ -1,6 +1,12 @@
-lmstudio
 discord.py
+discord-ext-voice-recv @ git+https://github.com/imayhaveborkedit/discord-ext-voice-recv
 python-dotenv
 faster-whisper
 requests
 aiohttp
+ollama
+psutil
+numpy
+chromadb
+sentence-transformers
+torchaudio

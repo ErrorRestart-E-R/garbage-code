@@ -14,7 +14,7 @@ import logging
 from stt_handler import run_stt_process
 from context_manager import ConversationManager
 from memory_manager import MemoryManager
-from llm_interface import should_respond, is_important, get_neuro_response_stream
+from llm_interface import should_respond, is_important, get_llm_response_stream
 from audio_utils import STTSink, AudioPlayer
 from tts_handler import tts_handler
 from logger import setup_logger
@@ -24,6 +24,7 @@ logger = setup_logger(__name__, config.LOG_FILE, config.LOG_LEVEL)
 
 # Suppress verbose RTCP packet logs from voice_recv
 logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.WARNING)
+logging.getLogger("discord.player").setLevel(logging.WARNING)
 
 # Initialize Managers
 conversation_manager = ConversationManager()
@@ -56,6 +57,25 @@ async def process_memory_background(user_name, user_text):
     except Exception as e:
         logger.error(f"Memory save error: {e}")
 
+async def tts_worker(tts_queue, tts_handler, player):
+    """
+    Background worker to process text-to-speech conversion sequentially.
+    """
+    while True:
+        text = await tts_queue.get()
+        if text is None:  # Sentinel to stop the worker
+            tts_queue.task_done()
+            break
+            
+        try:
+            wav_data = await tts_handler.get_async(text, TTS_LANG)
+            if wav_data:
+                await player.add_audio(wav_data)
+        except Exception as e:
+            logging.error(f"TTS worker error: {e}")
+            
+        tts_queue.task_done()
+
 async def process_results():
     logger.info("Result processing started")
     while True:
@@ -75,7 +95,8 @@ async def process_results():
                         user_name = f"User_{user_id}"
                 
                 if user_text:
-                    logger.info(f"{user_name}: {user_text}")
+                    # Use print for clean conversation output
+                    print(f"\n{user_name}: {user_text}")
                     
                     # 1. Update Short-term Context
                     conversation_manager.add_message(user_name, user_text)
@@ -98,7 +119,7 @@ async def process_results():
 
                     # 5. Judge & Respond
                     if await should_respond(llm_input_json, system_context):
-                        logger.debug("Neuro responding")
+                        logger.debug(f"{config.AI_NAME} responding")
                         
                         # Find Voice Client for AudioPlayer
                         vc = None
@@ -111,8 +132,18 @@ async def process_results():
                             full_response = ""
                             buffer = ""
                             
-                            async for chunk in get_neuro_response_stream(llm_input_json, system_context):
+                            # Start TTS worker
+                            tts_queue = asyncio.Queue()
+                            tts_task = asyncio.create_task(tts_worker(tts_queue, tts, player))
+                            
+                            # Start streaming output
+                            print(f"{config.AI_NAME}: ", end="", flush=True)
+                            
+                            async for chunk in get_llm_response_stream(llm_input_json, system_context):
                                 if chunk:
+                                    # Print chunk to terminal immediately
+                                    print(chunk, end="", flush=True)
+                                    
                                     full_response += chunk
                                     buffer += chunk
                                     
@@ -120,24 +151,26 @@ async def process_results():
                                     if any(p in buffer for p in ['.', '!', '?', '\n']):
                                         if buffer.strip() and buffer.strip()[-1] in ['.', '!', '?', '\n']:
                                             sentence = buffer.strip()
-                                            logger.debug(f"TTS: {sentence[:30]}...")
+                                            logger.debug(f"TTS queue: {sentence[:30]}...")
                                             
-                                            # Send to TTS (Async but sequential in this loop)
-                                            wav_data = await tts.get_async(sentence, "ko")
-                                            if wav_data:
-                                                await player.add_audio(wav_data)
+                                            # Send to TTS queue (Non-blocking)
+                                            await tts_queue.put(sentence)
                                             
                                             buffer = ""
+                            # End of stream newline
+                            print()
                             
                             # Process remaining buffer
                             if buffer.strip():
-                                logger.debug(f"TTS final: {buffer.strip()[:30]}...")
-                                wav_data = await tts.get_async(buffer.strip(), "ko")
-                                if wav_data:
-                                    await player.add_audio(wav_data)
+                                logger.debug(f"TTS queue final: {buffer.strip()[:30]}...")
+                                await tts_queue.put(buffer.strip())
+                                
+                            # Signal worker to stop and wait for it to finish
+                            await tts_queue.put(None)
+                            await tts_task
                             
-                            logger.info(f"Neuro: {full_response}")
-                            conversation_manager.add_message("Neuro", full_response)
+                            # logger.info(f"{config.AI_NAME}: {full_response}") # Removed to avoid duplicate
+                            conversation_manager.add_message(config.AI_NAME, full_response)
                         else:
                             logger.warning("Not in voice channel")
                             
@@ -150,7 +183,7 @@ async def process_results():
                         logger.debug("STT queue cleared")
 
                     else:
-                        logger.debug("Neuro not responding")
+                        logger.debug(f"{config.AI_NAME} not responding")
             else:
                 await discord.utils.sleep_until(discord.utils.utcnow() + datetime.timedelta(milliseconds=10))
                 await asyncio.sleep(0.01)
