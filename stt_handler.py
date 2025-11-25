@@ -87,7 +87,7 @@ def run_stt_process(audio_queue, result_queue, command_queue):
                 user_buffers[user_id] = bytearray()
                 user_speech_buffers[user_id] = bytearray()
                 user_ring_buffers[user_id] = collections.deque(maxlen=config.RING_BUFFER_SIZE)
-                user_vad_iterators[user_id] = VADIterator(vad_model)
+                user_vad_iterators[user_id] = VADIterator(vad_model, min_silence_duration_ms=config.VAD_MIN_SILENCE_DURATION_MS)
             
             user_buffers[user_id].extend(pcm_data)
             
