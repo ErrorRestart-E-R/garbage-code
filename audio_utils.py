@@ -1,17 +1,8 @@
-import logging
 import numpy as np
 from discord.ext.voice_recv import AudioSink, VoiceData
 import discord
 import asyncio
 import io
-
-# Suppress specific RTCP warning from voice_recv
-class RTCPFilter(logging.Filter):
-    def filter(self, record):
-        return "Received unexpected rtcp packet: type=200" not in record.getMessage()
-
-def setup_audio_logging():
-    logging.getLogger("discord.ext.voice_recv.reader").addFilter(RTCPFilter())
 
 class STTSink(AudioSink):
     def __init__(self, audio_queue):

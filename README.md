@@ -3,7 +3,6 @@
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=for-the-badge&logo=python&logoColor=white)
 ![Discord.py](https://img.shields.io/badge/Discord.py-2.0%2B-5865F2?style=for-the-badge&logo=discord&logoColor=white)
 ![Faster-Whisper](https://img.shields.io/badge/Faster--Whisper-Large--v3-success?style=for-the-badge)
-![Silero VAD](https://img.shields.io/badge/Silero%20VAD-High%20Accuracy-orange?style=for-the-badge)
 
 > **The Ultimate Low-Latency Speech-to-Text Solution for Discord.**
 > Built for speed, accuracy, and stability using a multi-process architecture.
@@ -20,8 +19,7 @@ Most bots fail because they run heavy AI models on the same thread as the Discor
 
 -   **Multiprocessing Core**: The STT engine runs in a completely separate process, communicating via IPC Queues. The bot *never* freezes, even under heavy load.
 -   **Zero-Latency Feel**:
-    -   **Ring Buffer Technology**: Captures 300ms of pre-speech context so the first syllable is never cut off.
-    -   **Silero VAD**: State-of-the-art Voice Activity Detection filters out breathing and keyboard clicks instantly.
+    -   **Frame Buffering**: Captures short context so the first syllable is never cut off.
     -   **Faster-Whisper**: Uses CTranslate2-powered Whisper for 4x faster inference than standard OpenAI Whisper.
 -   **Memory Safe**: Implements an **Auto-Cleanup Garbage Collector** that aggressively frees memory for inactive users.
 
@@ -41,11 +39,10 @@ graph TD
     end
 
     subgraph "STT Process (Isolated)"
-        D --> E[Ring Buffer]
-        E -->|Frame| F{Silero VAD}
-        F -- Speech Detected --> G[Accumulator]
-        F -- Silence --> G
-        G -- End of Speech --> J[Faster-Whisper Model]
+        D --> E[Frame Buffer]
+        E -->|Frame| F[Silence Detector]
+        F --> G[Accumulator]
+        G -->|Segment| J[Faster-Whisper Model]
         J -->|Text| H
     end
 ```
@@ -66,7 +63,7 @@ cd discord-stt-bot
 pip install -r requirements.txt
 pip install lmstudio
 ```
-> *Note: This installs `torch` and `faster-whisper`. The total size may exceed 2GB.*
+> *Note: The first `faster-whisper` run downloads optimized kernels, so the initial setup may take a few minutes.*
 > LM Studio Python SDK 설치 및 사용법은 [공식 문서](https://lmstudio.ai/docs/python)를 참고하세요.
 
 ### 2. Configuration
@@ -91,8 +88,6 @@ We believe in **Configuration as Code**. All magic numbers are exposed in `confi
 | **STT** | `STT_MODEL_ID` | `deepdml/faster-whisper...` | The HuggingFace model ID. |
 | | `STT_DEVICE` | `cuda` | Use `cpu` if you don't have a GPU. |
 | | `STT_BEAM_SIZE` | `1` | Lower is faster. Higher is more accurate. |
-| **VAD** | `RING_BUFFER_SIZE` | `10` | Pre-speech context buffer (10 frames ≈ 320ms). |
-| | `FRAME_DURATION_MS` | `32` | Frame size for Silero VAD (Do not change). |
 | **System** | `USER_TIMEOUT_SECONDS` | `60` | Seconds before clearing inactive user memory. |
 
 ---
@@ -108,13 +103,13 @@ We believe in **Configuration as Code**. All magic numbers are exposed in `confi
 ## 🧩 Troubleshooting
 
 **Q: The bot joins but doesn't transcribe.**
-> **A:** Check your console. If you see `Silero VAD loaded`, wait for the model to download. Also, ensure the user has permission to speak.
+> **A:** Check the console output and confirm that the STT process printed `Faster-Whisper loaded`. Also, ensure the user has permission to speak.
 
 **Q: It's too slow!**
 > **A:** Ensure `STT_DEVICE` is set to `cuda` in `config.py`. Running `large-v3` on CPU is not recommended. Switch to `base` or `small` for CPU usage.
 
 **Q: "Input audio chunk is too short" error?**
-> **A:** This was a known issue with Silero VAD frame sizes. We have fixed it by enforcing a **512-sample (32ms)** frame size in the code.
+> **A:** The STT worker enforces a **512-sample (32ms)** frame size. If you still see this error, verify that FFmpeg and Discord voice permissions are configured correctly so the bot receives continuous audio.
 
 ---
 

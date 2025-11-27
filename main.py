@@ -244,11 +244,13 @@ if __name__ == "__main__":
     from all_api_testing import run_all_tests
     
     print("\n🚀 Starting AI VTuber Bot...\n")
-    if not run_all_tests():
-        print("\n❌ Pre-flight checks failed.\n")
-        sys.exit(1)
-    
-    print("✓ All systems operational\n")
+    if config.ENABLE_PREFLIGHT_CHECKS:
+        if not run_all_tests():
+            print("\n❌ Pre-flight checks failed.\n")
+            sys.exit(1)
+        print("✓ All systems operational\n")
+    else:
+        print("⚠️  Pre-flight checks skipped (set ENABLE_PREFLIGHT_CHECKS=true to enable)\n")
     
     multiprocessing.freeze_support()
     

@@ -72,7 +72,6 @@ def test_required_packages() -> bool:
         'ollama': 'ollama',
         'discord': 'discord.py',
         'faster_whisper': 'faster-whisper',
-        'torch': 'torch',
         'requests': 'requests',
         'aiohttp': 'aiohttp',
         'dotenv': 'python-dotenv',
@@ -214,21 +213,29 @@ def test_tts_server() -> bool:
 
 def test_stt_models() -> bool:
     """
-    Tests STT/VAD model availability and CUDA.
+    Tests STT model availability and optional CUDA support.
     Returns True if test passes, False otherwise.
     """
     print_test_header("STT/VAD Models and CUDA")
     
     try:
-        import torch
         import config
         
-        # Check CUDA availability
-        if torch.cuda.is_available():
-            print_success(f"CUDA is available (Device: {torch.cuda.get_device_name(0)})")
+        try:
+            import torch  # Optional dependency
+        except ImportError:
+            torch = None
+            print_info("torch not installed - skipping CUDA diagnostics")
+        
+        # Check CUDA availability only if torch exists
+        if torch:
+            if torch.cuda.is_available():
+                print_success(f"CUDA is available (Device: {torch.cuda.get_device_name(0)})")
+            else:
+                print_error("CUDA is NOT available")
+                print_info("STT will run on CPU (slower)")
         else:
-            print_error("CUDA is NOT available")
-            print_info("STT will run on CPU (slower)")
+            print_success("Continuing without CUDA diagnostics")
         
         # Check if faster-whisper can be imported
         try:
@@ -245,7 +252,7 @@ def test_stt_models() -> bool:
         
         # Note: We don't actually load the models here as they're heavy
         # They will be loaded in the STT process
-        print_success("STT/VAD configuration is valid")
+        print_success("STT configuration is valid")
         print_success("STT models test passed")
         return True
         

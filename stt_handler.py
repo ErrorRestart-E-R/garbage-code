@@ -1,9 +1,6 @@
 import time
 import queue
-import collections
 import numpy as np
-import torch
-import psutil
 from logger import setup_logger
 import os
 import config
@@ -11,11 +8,9 @@ logger = setup_logger(__name__, config.LOG_FILE, config.LOG_LEVEL)
 def run_stt_process(audio_queue, result_queue, command_queue):
     """
     Standalone process for Speech-to-Text.
-    Handles VAD (Voice Activity Detection), Audio Buffering, and Transcription.
+    Handles lightweight audio buffering and transcription without VAD.
     Running this isolated prevents the Discord bot from freezing during heavy inference.
     """
-    print(f"STT Process started. PID: {os.getpid()}")
-    
     print(f"STT Process started. PID: {os.getpid()}")
     
     # --- Model Initialization ---
@@ -30,17 +25,10 @@ def run_stt_process(audio_queue, result_queue, command_queue):
         from faster_whisper import WhisperModel
         model = WhisperModel("base", device="cpu", compute_type="int8")
 
-    except Exception as e:
-        print(f"Error loading Silero VAD: {e}")
-        return
-
     # --- State Management ---
     user_buffers = {}       # Incoming raw audio stream
     user_speech_buffers = {} # Accumulated speech segments
     user_last_activity = {}  # Timestamp for cleanup
-    
-    # VAD State per user
-    user_vad_iterators = {} 
 
     print("STT Process Ready.")
 

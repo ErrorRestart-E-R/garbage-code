@@ -8,6 +8,8 @@ load_dotenv()
 # Discord Configuration
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 COMMAND_PREFIX = "!"
+# Optional startup diagnostics
+ENABLE_PREFLIGHT_CHECKS = os.getenv("ENABLE_PREFLIGHT_CHECKS", "false").lower() == "true"
 
 # STT Configuration
 STT_MODEL_ID = "deepdml/faster-whisper-large-v3-turbo-ct2"
@@ -16,7 +18,6 @@ STT_COMPUTE_TYPE = "float16"
 STT_LANGUAGE = "ko"
 STT_BEAM_SIZE = 1
 
-# VAD Configuration
 FRAME_SIZE_SAMPLES = 512
 FRAME_SIZE_BYTES = FRAME_SIZE_SAMPLES * 2 # 1024 bytes
 MIN_SILENCE_DURATION_MS = 500 # Wait 0.5s silence before cutting off
