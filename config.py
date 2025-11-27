@@ -24,7 +24,7 @@ FRAME_DURATION_MS = 32 # Silero requires 32ms (512 samples)
 FRAME_SIZE_SAMPLES = 512
 FRAME_SIZE_BYTES = FRAME_SIZE_SAMPLES * 2 # 1024 bytes
 RING_BUFFER_SIZE = 10 # ~320ms context
-VAD_MIN_SILENCE_DURATION_MS = 700 # Wait 0.7s silence before cutting off
+VAD_MIN_SILENCE_DURATION_MS = 500 # Wait 0.5s silence before cutting off
 
 # Cleanup Configuration
 USER_TIMEOUT_SECONDS = 60
@@ -35,7 +35,7 @@ OLLAMA_HOST = "http://192.168.45.28:11434"
 
 # LLM Model Configuration
 # Specify the model to use with Ollama
-LLM_MODEL_NAME = "gemma3:12b" 
+LLM_MODEL_NAME = "gemma3:4b" 
 
 # Logging Configuration
 LOG_LEVEL = logging.INFO  # Change to logging.DEBUG for detailed logs

@@ -68,7 +68,7 @@ async def tts_worker(tts_queue, tts_handler, player):
             break
             
         try:
-            wav_data = await tts_handler.get_async(text, TTS_LANG)
+            wav_data = await tts_handler.get_async(text, config.TTS_LANG)
             if wav_data:
                 await player.add_audio(wav_data)
         except Exception as e:
