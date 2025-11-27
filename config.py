@@ -17,14 +17,9 @@ STT_LANGUAGE = "ko"
 STT_BEAM_SIZE = 1
 
 # VAD Configuration
-VAD_REPO_OR_DIR = 'snakers4/silero-vad'
-VAD_MODEL = 'silero_vad'
-SAMPLE_RATE = 16000
-FRAME_DURATION_MS = 32 # Silero requires 32ms (512 samples)
 FRAME_SIZE_SAMPLES = 512
 FRAME_SIZE_BYTES = FRAME_SIZE_SAMPLES * 2 # 1024 bytes
-RING_BUFFER_SIZE = 10 # ~320ms context
-VAD_MIN_SILENCE_DURATION_MS = 500 # Wait 0.5s silence before cutting off
+MIN_SILENCE_DURATION_MS = 500 # Wait 0.5s silence before cutting off
 
 # Cleanup Configuration
 USER_TIMEOUT_SECONDS = 60

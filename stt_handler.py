@@ -4,9 +4,10 @@ import collections
 import numpy as np
 import torch
 import psutil
+from logger import setup_logger
 import os
 import config
-
+logger = setup_logger(__name__, config.LOG_FILE, config.LOG_LEVEL)
 def run_stt_process(audio_queue, result_queue, command_queue):
     """
     Standalone process for Speech-to-Text.
@@ -29,15 +30,6 @@ def run_stt_process(audio_queue, result_queue, command_queue):
         from faster_whisper import WhisperModel
         model = WhisperModel("base", device="cpu", compute_type="int8")
 
-    print("Loading Silero VAD...")
-    try:
-        # Silero VAD is highly optimized for speech detection
-        vad_model, utils = torch.hub.load(repo_or_dir=config.VAD_REPO_OR_DIR,
-                                          model=config.VAD_MODEL,
-                                          force_reload=False,
-                                          trust_repo=True)
-        (get_speech_timestamps, save_audio, read_audio, VADIterator, collect_chunks) = utils
-        print("Silero VAD loaded.")
     except Exception as e:
         print(f"Error loading Silero VAD: {e}")
         return
@@ -45,7 +37,6 @@ def run_stt_process(audio_queue, result_queue, command_queue):
     # --- State Management ---
     user_buffers = {}       # Incoming raw audio stream
     user_speech_buffers = {} # Accumulated speech segments
-    user_ring_buffers = {}   # Pre-speech context (Ring Buffer)
     user_last_activity = {}  # Timestamp for cleanup
     
     # VAD State per user
@@ -57,6 +48,7 @@ def run_stt_process(audio_queue, result_queue, command_queue):
         # 1. Check Commands
         try:
             while not command_queue.empty():
+                logger.debug("Command received")
                 cmd, data = command_queue.get_nowait()
                 if cmd == "LEAVE":
                     user_id = data
@@ -64,18 +56,15 @@ def run_stt_process(audio_queue, result_queue, command_queue):
                         del user_buffers[user_id]
                     if user_id in user_speech_buffers:
                         del user_speech_buffers[user_id]
-                    if user_id in user_ring_buffers:
-                        del user_ring_buffers[user_id]
                     if user_id in user_last_activity:
                         del user_last_activity[user_id]
-                    if user_id in user_vad_iterators:
-                        del user_vad_iterators[user_id]
                     print(f"Cleaned up user {user_id}")
         except Exception:
             pass
 
         # 2. Process Audio
         try:
+            logger.debug("Processing audio")
             # Non-blocking get with timeout to allow cleanup loop to run
             user_id, pcm_data = audio_queue.get(timeout=0.1)
             
@@ -86,53 +75,27 @@ def run_stt_process(audio_queue, result_queue, command_queue):
             if user_id not in user_buffers:
                 user_buffers[user_id] = bytearray()
                 user_speech_buffers[user_id] = bytearray()
-                user_ring_buffers[user_id] = collections.deque(maxlen=config.RING_BUFFER_SIZE)
-                user_vad_iterators[user_id] = VADIterator(vad_model, min_silence_duration_ms=config.VAD_MIN_SILENCE_DURATION_MS)
             
             user_buffers[user_id].extend(pcm_data)
             
             # Process audio in chunks of 512 samples (32ms)
             while len(user_buffers[user_id]) >= config.FRAME_SIZE_BYTES:
+                logger.debug(f"Speech detected for user {user_id}")
                 frame = user_buffers[user_id][:config.FRAME_SIZE_BYTES]
                 del user_buffers[user_id][:config.FRAME_SIZE_BYTES]
-                
-                # Prepare frame for Silero (float32, normalized)
-                frame_np = np.frombuffer(frame, dtype=np.int16).astype(np.float32) / 32768.0
-                frame_tensor = torch.from_numpy(frame_np)
-                
-                # Get speech probability
-                speech_dict = user_vad_iterators[user_id](frame_tensor, return_seconds=True)
-                
-                is_speech = False
-                # Check if VAD triggered
-                if user_vad_iterators[user_id].triggered:
-                    is_speech = True
-                
-                if is_speech:
-                    # Speech detected.
-                    # If this is the start of a new speech segment, prepend the ring buffer context.
-                    if len(user_speech_buffers[user_id]) == 0:
-                         for prev_frame in user_ring_buffers[user_id]:
-                             user_speech_buffers[user_id].extend(prev_frame)
-                         user_ring_buffers[user_id].clear()
-                    
-                    user_speech_buffers[user_id].extend(frame)
-                else:
+                user_speech_buffers[user_id].extend(frame)
+        except queue.Empty:
+            for user_id in user_last_activity.keys():
+                if time.time() - user_last_activity[user_id] > config.MIN_SILENCE_DURATION_MS/1000:
+                    logger.debug(f"Silence detected for user {user_id}")
                     # Silence detected.
                     if len(user_speech_buffers[user_id]) > 0:
                         # End of speech segment -> Transcribe
                         audio_to_transcribe = user_speech_buffers[user_id][:]
                         user_speech_buffers[user_id] = bytearray()
-                        
                         transcribe_and_send(model, user_id, audio_to_transcribe, result_queue)
-                    
-                    # Keep recent frames in ring buffer for context
-                    user_ring_buffers[user_id].append(frame)
-
-        except queue.Empty:
-            pass
         except Exception as e:
-            print(f"Error in STT loop: {e}")
+            print(f"Error in STT loop: {str(e)}")
 
         # 3. Cleanup Inactive Users
         current_time = time.time()
@@ -145,9 +108,7 @@ def run_stt_process(audio_queue, result_queue, command_queue):
             print(f"User {uid} timed out. Cleaning up.")
             del user_buffers[uid]
             del user_speech_buffers[uid]
-            del user_ring_buffers[uid]
             del user_last_activity[uid]
-            del user_vad_iterators[uid]
 
 def transcribe_and_send(model, user_id, audio_data, result_queue):
     if len(audio_data) < 3200: # Ignore very short audio (< 0.1s)
@@ -167,6 +128,8 @@ def transcribe_and_send(model, user_id, audio_data, result_queue):
         duration = end_time - start_time
         
         if text.strip():
+            logger.debug(f"Transcription successful for user {user_id}")
+            logger.debug(f"Transcription: {text.strip()}")
             result_queue.put({
                 "user_id": user_id,
                 "text": text.strip(),
