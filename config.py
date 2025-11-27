@@ -61,7 +61,26 @@ ENABLE_PROACTIVE_CHAT = True   # Whether AI initiates conversation during silenc
 # Thread Management
 THREAD_TIMEOUT = 30.0          # Conversation thread timeout (seconds)
 
-# Address Detection
+# Address Detection (Score-based System)
+# Response thresholds
+SCORE_RESPONSE_THRESHOLD = 0.35    # Respond if score >= this (0.0 ~ 1.0)
+SCORE_HIGH_PRIORITY_THRESHOLD = 0.7  # Respond immediately if score >= this
+
+# Score weights (tunable)
+SCORE_AI_DIRECT_CALL = 0.5         # "@LLM", "LLM아"
+SCORE_REQUEST_PATTERN = 0.25       # "~해줘", "~알려줘"
+SCORE_QUESTION = 0.1               # Question mark, interrogatives
+SCORE_ONE_ON_ONE = 0.3             # Only 1 participant (1:1 with AI)
+SCORE_SMALL_GROUP = 0.1            # 2-3 participants
+SCORE_CONTINUATION_AI = 0.25       # AI just spoke, continuing conversation
+SCORE_BROADCAST = 0.15             # "다들", "여러분"
+
+# Score penalties
+PENALTY_OTHER_USER_MENTION = -0.5  # Mentioned another user by name
+PENALTY_SELF_TALK = -0.4           # Self-talk patterns
+PENALTY_SHORT_RESPONSE = -0.2      # Very short responses like "응", "어"
+PENALTY_UNKNOWN_NAME = -0.5        # Called someone not in participants
+
 # Broadcast keywords (can be extended)
 BROADCAST_KEYWORDS_KO = ["다들", "여러분", "모두", "전부", "다같이", "우리", "얘들아", "애들아"]
 BROADCAST_KEYWORDS_EN = ["everyone", "everybody", "all", "guys", "folks", "y'all"]

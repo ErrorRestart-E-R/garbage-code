@@ -3,6 +3,7 @@ ConversationOrchestrator: Integrated conversation algorithm orchestrator
 
 Integrates AddressDetector, TurnManager, and ConversationManager
 to manage natural conversation flow in multi-user environments.
+Uses score-based address detection for more accurate AI response decisions.
 """
 
 import asyncio
@@ -34,10 +35,11 @@ class OrchestratorResult:
     reason: str = ""
     address_analysis: Optional[AddressAnalysis] = None
     turn_decision: Optional[TurnDecision] = None
+    score_explanation: str = ""  # Score breakdown explanation
 
 
 class ConversationOrchestrator:
-    """Conversation orchestrator"""
+    """Conversation orchestrator with score-based address detection"""
     
     def __init__(self, 
                  ai_name: str = "LLM",
@@ -67,6 +69,7 @@ class ConversationOrchestrator:
         # Settings
         self.enable_proactive_chat = True  # Initiate conversation during silence
         self.silence_threshold = 60.0      # Silence threshold (seconds)
+        self.enable_score_logging = True   # Log score breakdown
     
     def set_respond_callback(self, callback: Callable[[Message, str], Awaitable[None]]):
         """Set response callback"""
@@ -102,12 +105,12 @@ class ConversationOrchestrator:
     
     async def process_message(self, user_name: str, text: str) -> OrchestratorResult:
         """
-        Process new message
+        Process new message using score-based address detection.
         
         Full pipeline:
-        1. Analyze speech target (AddressDetector)
+        1. Analyze speech target with scoring (AddressDetector)
         2. Record message (ConversationManager)
-        3. Decide turn (TurnManager)
+        3. Decide turn based on score (TurnManager)
         4. Wait or respond immediately
         
         Args:
@@ -115,21 +118,39 @@ class ConversationOrchestrator:
             text: Speech content
             
         Returns:
-            OrchestratorResult: Processing result
+            OrchestratorResult: Processing result with score explanation
         """
         self.logger.debug(f"Processing message from {user_name}: {text[:50]}...")
         
-        # 1. Analyze speech target
+        # Get participant count for scoring
+        participant_count = self.conversation_manager.get_active_participants_count()
+        
+        # 1. Analyze speech target with scoring
         recent_messages = self.conversation_manager.get_recent_messages(5)
         address_analysis = self.address_detector.analyze(
             text=text,
             speaker=user_name,
-            recent_messages=recent_messages
+            recent_messages=recent_messages,
+            participant_count=participant_count
         )
+        
+        # Get score explanation
+        score_explanation = ""
+        if address_analysis.score_breakdown:
+            score_explanation = self.address_detector.get_score_explanation(
+                address_analysis.score_breakdown
+            )
+        
+        # Log score breakdown
+        if self.enable_score_logging:
+            self.logger.info(
+                f"[SCORE] {user_name}: \"{text[:30]}...\" → {score_explanation}"
+            )
         
         self.logger.debug(
             f"Address analysis: type={address_analysis.address_type.value}, "
-            f"targets={address_analysis.targets}, confidence={address_analysis.confidence:.2f}"
+            f"score={address_analysis.confidence:.2f}, "
+            f"targets={address_analysis.targets}"
         )
         
         # 2. Record message
@@ -142,14 +163,12 @@ class ConversationOrchestrator:
         )
         
         # 3. Check pending response handling
-        # If waiting for broadcast question, don't cancel, just extend wait time
         should_cancel = self.turn_manager.should_cancel_pending(message)
         
         if should_cancel:
             self._cancel_pending()
             self.logger.debug("Cancelled pending response due to new message")
         elif self.turn_manager.pending_response:
-            # If others responded to broadcast question
             if self.turn_manager.pending_response.decision.is_broadcast_response:
                 others = self.turn_manager.pending_response.others_responded
                 self.logger.debug(
@@ -157,20 +176,27 @@ class ConversationOrchestrator:
                     f"AI still waiting for turn"
                 )
         
-        # 4. Check if AI should be included and priority
+        # 4. Check if AI should respond based on score
         ai_included, priority = self.address_detector.should_ai_be_included(address_analysis)
         
-        # If already waiting for broadcast question, ignore new analysis result
+        # Log decision
+        threshold = self.address_detector.RESPONSE_THRESHOLD
+        self.logger.debug(
+            f"AI inclusion: {ai_included}, priority={priority:.2f}, "
+            f"threshold={threshold}"
+        )
+        
+        # If already waiting for broadcast question, ignore new analysis
         if (self.turn_manager.pending_response and 
             self.turn_manager.pending_response.decision.is_broadcast_response and
             not should_cancel):
-            # Maintain existing wait, only record new message
             self.logger.debug("Maintaining existing broadcast wait, new message recorded only")
             return OrchestratorResult(
                 action=OrchestratorAction.SKIP,
                 message=message,
                 reason="Already waiting for broadcast response turn",
-                address_analysis=address_analysis
+                address_analysis=address_analysis,
+                score_explanation=score_explanation
             )
         
         if not ai_included:
@@ -178,8 +204,9 @@ class ConversationOrchestrator:
             return OrchestratorResult(
                 action=OrchestratorAction.SKIP,
                 message=message,
-                reason=f"AI not included in targets: {address_analysis.reason}",
-                address_analysis=address_analysis
+                reason=f"Score below threshold: {address_analysis.reason}",
+                address_analysis=address_analysis,
+                score_explanation=score_explanation
             )
         
         # 5. Decide turn
@@ -205,11 +232,11 @@ class ConversationOrchestrator:
                 wait_seconds=turn_decision.wait_seconds,
                 reason=turn_decision.reason,
                 address_analysis=address_analysis,
-                turn_decision=turn_decision
+                turn_decision=turn_decision,
+                score_explanation=score_explanation
             )
         
         elif turn_decision.decision == ResponseDecision.WAIT_FOR_OTHERS:
-            # Set pending
             self._cancelled = False
             self.turn_manager.set_pending(message, turn_decision)
             
@@ -219,7 +246,8 @@ class ConversationOrchestrator:
                 wait_seconds=turn_decision.wait_seconds,
                 reason=turn_decision.reason,
                 address_analysis=address_analysis,
-                turn_decision=turn_decision
+                turn_decision=turn_decision,
+                score_explanation=score_explanation
             )
         
         elif turn_decision.decision == ResponseDecision.OBSERVE_ONLY:
@@ -229,7 +257,8 @@ class ConversationOrchestrator:
                 message=message,
                 reason=turn_decision.reason,
                 address_analysis=address_analysis,
-                turn_decision=turn_decision
+                turn_decision=turn_decision,
+                score_explanation=score_explanation
             )
         
         else:  # DEFER
@@ -238,7 +267,8 @@ class ConversationOrchestrator:
                 message=message,
                 reason=turn_decision.reason,
                 address_analysis=address_analysis,
-                turn_decision=turn_decision
+                turn_decision=turn_decision,
+                score_explanation=score_explanation
             )
     
     async def wait_and_respond(self, result: OrchestratorResult) -> bool:
@@ -252,7 +282,6 @@ class ConversationOrchestrator:
             True: Responded, False: Cancelled
         """
         if result.action == OrchestratorAction.RESPOND:
-            # Short wait then respond immediately
             await asyncio.sleep(result.wait_seconds)
             if not self._is_cancelled():
                 self.turn_manager.record_ai_response()
@@ -261,8 +290,6 @@ class ConversationOrchestrator:
             return False
         
         elif result.action == OrchestratorAction.WAIT:
-            # Wait while checking cancellation
-            # For broadcast questions, also track others' response count
             should_respond = await self.turn_manager.wait_for_turn(
                 decision=result.turn_decision,
                 check_cancelled=self._is_cancelled,
@@ -285,7 +312,7 @@ class ConversationOrchestrator:
             user_name=self.ai_name,
             text=response_text,
             address_type=AddressType.DIRECT,
-            targets=set()  # Response target inferred from context
+            targets=set()
         )
     
     def get_system_context(self) -> str:
@@ -309,7 +336,9 @@ class ConversationOrchestrator:
             "message_count": len(self.conversation_manager.history),
             "has_pending": self.turn_manager.pending_response is not None,
             "pending_info": pending_info,
-            "consecutive_responses": self.turn_manager.consecutive_responses
+            "consecutive_responses": self.turn_manager.consecutive_responses,
+            "response_threshold": self.address_detector.RESPONSE_THRESHOLD,
+            "high_priority_threshold": self.address_detector.HIGH_PRIORITY_THRESHOLD
         }
     
     async def check_silence_break(self) -> Optional[str]:
@@ -326,7 +355,6 @@ class ConversationOrchestrator:
             self.conversation_manager, 
             self.silence_threshold
         ):
-            # If participants exist, suggest starting conversation
             participants = self.conversation_manager.participants
             if participants:
                 return f"Silence has lasted over {self.silence_threshold} seconds. Can initiate conversation."
@@ -336,6 +364,19 @@ class ConversationOrchestrator:
     def cleanup_expired_threads(self):
         """Clean up expired threads"""
         self.conversation_manager.cleanup_expired_threads()
+    
+    def set_response_threshold(self, threshold: float):
+        """
+        Adjust response threshold dynamically.
+        
+        Lower threshold = AI responds more often
+        Higher threshold = AI responds less often
+        
+        Args:
+            threshold: New threshold (0.0 ~ 1.0)
+        """
+        self.address_detector.RESPONSE_THRESHOLD = max(0.0, min(1.0, threshold))
+        self.logger.info(f"Response threshold set to {threshold:.2f}")
 
 
 # Factory function for convenient use
