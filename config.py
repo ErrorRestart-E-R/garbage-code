@@ -19,8 +19,8 @@ STT_LANGUAGE = "ko"
 STT_BEAM_SIZE = 1
 
 FRAME_SIZE_SAMPLES = 512
-FRAME_SIZE_BYTES = FRAME_SIZE_SAMPLES * 2 # 1024 bytes
-MIN_SILENCE_DURATION_MS = 500 # Wait 0.5s silence before cutting off
+FRAME_SIZE_BYTES = FRAME_SIZE_SAMPLES * 2  # 1024 bytes
+MIN_SILENCE_DURATION_MS = 500  # Wait 0.5s silence before cutting off
 
 # Cleanup Configuration
 USER_TIMEOUT_SECONDS = 60
@@ -44,8 +44,27 @@ TTS_REFERENCE_PROMPT_LANG = "ja"
 TTS_REFERENCE_FILE = "reference.wav"
 TTS_LANG = "ko"
 
-# AI Identity
+# AI Name
 AI_NAME = "LLM"
+
+# Conversation Algorithm Configuration
+# Turn Management
+TURN_BASE_WAIT_TIME = 5.0      # Base wait time (seconds)
+TURN_MAX_WAIT_TIME = 10.0      # Maximum wait time (seconds)
+TURN_MIN_WAIT_TIME = 0.5       # Minimum wait time (seconds)
+TURN_MAX_CONSECUTIVE = 3       # Maximum consecutive responses
+
+# Silence Detection
+SILENCE_THRESHOLD = 15.0       # Silence threshold (seconds) - AI can initiate conversation after this
+ENABLE_PROACTIVE_CHAT = True   # Whether AI initiates conversation during silence
+
+# Thread Management
+THREAD_TIMEOUT = 30.0          # Conversation thread timeout (seconds)
+
+# Address Detection
+# Broadcast keywords (can be extended)
+BROADCAST_KEYWORDS_KO = ["다들", "여러분", "모두", "전부", "다같이", "우리", "얘들아", "애들아"]
+BROADCAST_KEYWORDS_EN = ["everyone", "everybody", "all", "guys", "folks", "y'all"]
 
 # System Prompts
 SYSTEM_PROMPT = """
