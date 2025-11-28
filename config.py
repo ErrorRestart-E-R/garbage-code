@@ -79,6 +79,9 @@ TTS_LANG = "ko"
 # AI Name
 AI_NAME = "LLM"
 
+# MCP (Tool Calling) Configuration
+ENABLE_MCP_TOOLS = True  # Set to False to disable MCP tool calling
+
 # Conversation Algorithm Configuration
 # Turn Management
 TURN_BASE_WAIT_TIME = 5.0      # Base wait time (seconds)

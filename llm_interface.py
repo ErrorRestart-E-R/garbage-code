@@ -121,7 +121,7 @@ async def get_llm_response_stream(user_input_json, system_context):
     """
     try:
         client = ollama.AsyncClient(host=config.OLLAMA_HOST)
-        tools = mcp_library.get_tools()
+        tools = mcp_library.get_tools() if config.ENABLE_MCP_TOOLS else None
         
         messages = [
             {'role': 'system', 'content': config.SYSTEM_PROMPT + "\n" + system_context},
@@ -133,14 +133,18 @@ async def get_llm_response_stream(user_input_json, system_context):
         content_buffer = ""
         has_yielded = False
         
-        async for part in await client.chat(
-            model=config.LLM_MODEL_NAME, 
-            messages=messages,
-            tools=tools,
-            think=False,
-            stream=True, 
-            options={"temperature": 0.7}
-        ):
+        # Build chat kwargs - only include tools if MCP is enabled
+        chat_kwargs = {
+            "model": config.LLM_MODEL_NAME,
+            "messages": messages,
+            "think": False,
+            "stream": True,
+            "options": {"temperature": 0.7}
+        }
+        if tools:
+            chat_kwargs["tools"] = tools
+        
+        async for part in await client.chat(**chat_kwargs):
             # Extract content
             if hasattr(part, 'message'):
                 content = part.message.content or ""
