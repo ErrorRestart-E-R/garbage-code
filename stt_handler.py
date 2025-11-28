@@ -52,7 +52,6 @@ def run_stt_process(audio_queue, result_queue, command_queue):
 
         # 2. Process Audio
         try:
-            logger.debug("Processing audio")
             # Non-blocking get with timeout to allow cleanup loop to run
             user_id, pcm_data = audio_queue.get(timeout=0.1)
             
@@ -68,14 +67,12 @@ def run_stt_process(audio_queue, result_queue, command_queue):
             
             # Process audio in chunks of 512 samples (32ms)
             while len(user_buffers[user_id]) >= config.FRAME_SIZE_BYTES:
-                logger.debug(f"Speech detected for user {user_id}")
                 frame = user_buffers[user_id][:config.FRAME_SIZE_BYTES]
                 del user_buffers[user_id][:config.FRAME_SIZE_BYTES]
                 user_speech_buffers[user_id].extend(frame)
         except queue.Empty:
             for user_id in user_last_activity.keys():
                 if time.time() - user_last_activity[user_id] > config.MIN_SILENCE_DURATION_MS/1000:
-                    logger.debug(f"Silence detected for user {user_id}")
                     # Silence detected.
                     if len(user_speech_buffers[user_id]) > 0:
                         # End of speech segment -> Transcribe

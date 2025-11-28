@@ -28,15 +28,15 @@ USER_TIMEOUT_SECONDS = 60
 # LLM Configuration
 # Ollama SDK Configuration
 OLLAMA_HOST = "http://192.168.45.28:11434"
-OLLAMA_EMBEDDING_HOST = "http://192.168.45.49:11434"
+OLLAMA_EMBEDDING_HOST = "http://192.168.45.28:11434"
 
 # LLM Model Configuration
 # Specify the model to use with Ollama
-LLM_MODEL_NAME = "qwen3-vl:4b" 
+LLM_MODEL_NAME = "qwen3:8b" 
 
 # Mem0 Memory Configuration
 # Embedding model for memory (run: ollama pull nomic-embed-text)
-MEMORY_EMBEDDING_MODEL = "qwen3-embedding:4b"
+MEMORY_EMBEDDING_MODEL = "qwen3-embedding:0.6b"
 MEMORY_DB_PATH = "./memory_db"
 
 MEM0_CONFIG = {

@@ -61,7 +61,7 @@ class AddressDetector:
     
     # === Score Weights (Tunable) ===
     SCORE_AI_DIRECT_CALL = 0.5       # "@LLM", "LLM아"
-    SCORE_REQUEST_PATTERN = 0.25    # "~해줘", "~알려줘"
+    SCORE_REQUEST_PATTERN = 0.4     # "~해줘", "~알려줘" 
     SCORE_QUESTION = 0.1            # Question mark, interrogatives
     SCORE_ONE_ON_ONE = 0.3          # Only 1 participant (1:1 with AI)
     SCORE_SMALL_GROUP = 0.1         # 2-3 participants
@@ -74,7 +74,7 @@ class AddressDetector:
     PENALTY_UNKNOWN_NAME = -0.5         # Called someone not in participants
     
     # Response threshold
-    RESPONSE_THRESHOLD = 0.35       # Respond if score >= this
+    RESPONSE_THRESHOLD = 0.3        # Respond if score >= this (lowered for better responsiveness)
     HIGH_PRIORITY_THRESHOLD = 0.7   # Respond immediately if score >= this
     
     # === Pattern Definitions ===
