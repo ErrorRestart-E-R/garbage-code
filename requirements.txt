@@ -7,4 +7,4 @@ aiohttp
 ollama
 numpy
 chromadb
-sentence-transformers
+mem0ai

@@ -28,10 +28,42 @@ USER_TIMEOUT_SECONDS = 60
 # LLM Configuration
 # Ollama SDK Configuration
 OLLAMA_HOST = "http://192.168.45.28:11434"
+OLLAMA_EMBEDDING_HOST = "http://192.168.45.49:11434"
 
 # LLM Model Configuration
 # Specify the model to use with Ollama
-LLM_MODEL_NAME = "gemma3:4b" 
+LLM_MODEL_NAME = "qwen3-vl:4b" 
+
+# Mem0 Memory Configuration
+# Embedding model for memory (run: ollama pull nomic-embed-text)
+MEMORY_EMBEDDING_MODEL = "qwen3-embedding:4b"
+MEMORY_DB_PATH = "./memory_db"
+
+MEM0_CONFIG = {
+    "vector_store": {
+        "provider": "chroma",
+        "config": {
+            "collection_name": "LLM_memory",
+            "path": MEMORY_DB_PATH,
+        },
+    },
+    "llm": {
+        "provider": "ollama",
+        "config": {
+            "model": LLM_MODEL_NAME,
+            "temperature": 0,
+            "max_tokens": 2000,
+            "ollama_base_url": OLLAMA_HOST,
+        },
+    },
+    "embedder": {
+        "provider": "ollama",
+        "config": {
+            "model": MEMORY_EMBEDDING_MODEL,
+            "ollama_base_url": OLLAMA_EMBEDDING_HOST,
+        },
+    },
+}
 
 # Logging Configuration
 LOG_LEVEL = logging.INFO  # Change to logging.DEBUG for detailed logs

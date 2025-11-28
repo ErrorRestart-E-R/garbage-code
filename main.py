@@ -13,7 +13,7 @@ import logging
 # Custom Modules
 from stt_handler import run_stt_process
 from memory_manager import MemoryManager
-from llm_interface import is_important, get_llm_response_stream
+from llm_interface import get_llm_response_stream
 from audio_utils import STTSink, AudioPlayer
 from tts_handler import tts_handler
 from logger import setup_logger
@@ -52,12 +52,12 @@ stt_process = None
 
 async def process_memory_background(user_name, user_text):
     """
-    Background task to handle memory saving.
+    Background task to handle memory saving using mem0.
+    mem0 automatically determines what's important and extracts facts.
+    Runs in thread pool to avoid blocking the event loop.
     """
     try:
-        if await is_important(user_text):
-            logger.debug(f"Saving memory for {user_name}")
-            memory_manager.save_memory(user_name, user_text)
+        await asyncio.to_thread(memory_manager.save_memory, user_name, user_text)
     except Exception as e:
         logger.error(f"Memory save error: {e}")
 
@@ -217,7 +217,9 @@ async def process_results():
                                 
                                 if should_respond:
                                     # 3. Retrieve Long-term Memories
-                                    memory_context = memory_manager.get_memory_context(user_text, user_name)
+                                    memory_context = await asyncio.to_thread(
+                                        memory_manager.get_memory_context, user_text, user_name
+                                    )
                                     
                                     # 4. Build Full Context
                                     system_context = orchestrator.get_system_context()

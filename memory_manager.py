@@ -1,65 +1,62 @@
-import chromadb
-from chromadb.utils import embedding_functions
-import datetime
-import os
+from mem0 import Memory
+import config
+from logger import setup_logger
+
+logger = setup_logger(__name__, config.LOG_FILE, config.LOG_LEVEL)
+
 
 class MemoryManager:
-    def __init__(self, db_path="./memory_db"):
-        self.client = chromadb.PersistentClient(path=db_path)
-        
-        # Use a lightweight embedding model
-        self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name="paraphrase-multilingual-mpnet-base-v2"
-        )
-        
-        self.collection = self.client.get_or_create_collection(
-            name="neuro_memory",
-            embedding_function=self.embedding_fn
-        )
+    def __init__(self):
+        """
+        Initialize mem0 Memory with Ollama + ChromaDB configuration.
+        """
+        self.memory = Memory.from_config(config.MEM0_CONFIG)
+        logger.info("Mem0 Memory initialized with Ollama + ChromaDB")
 
-    def save_memory(self, user_name, text):
+    def save_memory(self, user_name: str, text: str):
         """
-        Saves a text snippet to the vector DB with metadata.
+        Saves a text snippet to mem0 memory.
+        mem0 automatically extracts and stores relevant facts.
         """
-        timestamp = datetime.datetime.now().isoformat()
-        
-        # Generate a unique ID (simple timestamp + hash based)
-        doc_id = f"{user_name}_{timestamp}"
-        
-        self.collection.add(
-            documents=[text],
-            metadatas=[{"user": user_name, "timestamp": timestamp}],
-            ids=[doc_id]
-        )
-        print(f"[Memory] Saved: {text} (User: {user_name})")
+        try:
+            result = self.memory.add(
+                text,
+                user_id=user_name,
+                metadata={"source": "voice_chat"}
+            )
+            if result and result.get("results"):
+                logger.debug(f"[Memory] Saved for {user_name}: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"[Memory] Save error: {e}")
+            return None
 
-    def search_memory(self, query_text, user_name=None, limit=3):
+    def search_memory(self, query_text: str, user_name: str = None, limit: int = 3):
         """
-        Searches for relevant memories.
-        If user_name is provided, filters by that user.
+        Searches for relevant memories using mem0.
         """
-        where_filter = {"user": user_name} if user_name else None
-        
-        results = self.collection.query(
-            query_texts=[query_text],
-            n_results=limit,
-            where=where_filter
-        )
-        
-        # Parse results
-        memories = []
-        if results['documents']:
-            for i, doc in enumerate(results['documents'][0]):
-                metadata = results['metadatas'][0][i]
-                memories.append({
-                    "text": doc,
-                    "user": metadata['user'],
-                    "timestamp": metadata['timestamp']
-                })
-        
-        return memories
+        try:
+            results = self.memory.search(
+                query_text,
+                user_id=user_name,
+                limit=limit
+            )
+            
+            memories = []
+            if results and results.get("results"):
+                for item in results["results"]:
+                    memories.append({
+                        "text": item.get("memory", ""),
+                        "user": user_name,
+                        "score": item.get("score", 0)
+                    })
+            
+            return memories
+        except Exception as e:
+            logger.error(f"[Memory] Search error: {e}")
+            return []
 
-    def get_memory_context(self, query_text, user_name):
+    def get_memory_context(self, query_text: str, user_name: str):
         """
         Returns a formatted string of relevant memories for the context.
         """
@@ -69,6 +66,17 @@ class MemoryManager:
             
         context = "\nRelevant Long-term Memories:\n"
         for mem in memories:
-            context += f"- {mem['text']} (from {mem['user']})\n"
+            context += f"- {mem['text']}\n"
             
         return context
+
+    def get_all_memories(self, user_name: str):
+        """
+        Retrieves all memories for a specific user.
+        """
+        try:
+            result = self.memory.get_all(user_id=user_name)
+            return result.get("results", []) if result else []
+        except Exception as e:
+            logger.error(f"[Memory] Get all error: {e}")
+            return []
