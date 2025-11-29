@@ -26,12 +26,16 @@ USER_TIMEOUT_SECONDS = 60
 
 # LLM Configuration
 OLLAMA_HOST = "http://192.168.45.28:11434"
-LLM_MODEL_NAME = "gemma3:4b"
+LLM_MODEL_NAME = "Gemma3-finetune-tools-12b:latest"
 LLM_RESPONSE_TEMPERATURE = 0.8 # Higher temperature for creative responses
 
 # LLM Temperature Settings
 LLM_JUDGE_TEMPERATURE = 0.1  
-LLM_JUDGE_MAX_TOKENS = 10  # think=False so only need Y/N
+LLM_JUDGE_MAX_TOKENS = 10  # think=False so only need Y/W/N
+
+# Wait Response Configuration
+WAIT_RESPONSE_TIMEOUT = 5.0  # Seconds to wait before responding after W judgment
+WAIT_TIMER_RESET_ON_MESSAGE = True  # Reset timer when new message arrives
 
 # Mem0 Memory Configuration
 OLLAMA_EMBEDDING_HOST = "http://192.168.45.181:11434"
@@ -83,7 +87,7 @@ TTS_SENTENCE_DELIMITERS = ['.', '!', '?', '\n', '。']
 AI_NAME = "LLM"
 
 # MCP (Tool Calling) Configuration
-ENABLE_MCP_TOOLS = False  # Set to False to disable MCP tool calling
+ENABLE_MCP_TOOLS = True  # Set to False to disable MCP tool calling
 
 # Conversation History
 MAX_CONVERSATION_HISTORY = 10  # Maximum number of messages to keep
@@ -105,32 +109,98 @@ Do not use emojis.
 Do not add unnecessary trailing questions.
 """
 
-# Judge Prompt Template - Clearly indicates which message to judge
-# Thinking mode disabled via API (think=False)
-JUDGE_PROMPT_TEMPLATE = """{context_hint}
+# Judge System Prompt - Fixed rules for judgment (Y/W/N system)
+JUDGE_SYSTEM_PROMPT = """You are the social awareness module for AI "{ai_name}" in a multi-user voice chat room.
 
-[CONVERSATION HISTORY - For context only]
+Your job: Decide if AI should speak, considering social dynamics and timing.
+
+=== OUTPUT OPTIONS ===
+Y = Respond immediately (AI is directly addressed)
+W = Wait and see (group question - let others speak first, respond if silence)
+N = Do not respond (not AI's conversation)
+
+=== IMMEDIATE RESPONSE (Y) ===
+- Direct call to AI: "{ai_name}", "{ai_name}아", "AI야", "너" (clearly to AI)
+- 1:1 conversation: Almost always Y
+- Answering AI's previous question
+- AI was directly asked something
+
+=== WAIT AND SEE (W) ===
+- Group questions: "다들 뭐해?", "여러분 어떻게 지냈어?", "누가 알아?"
+- Questions to everyone that AI could answer but shouldn't rush
+- AI might want to respond, but should let humans go first
+
+=== DO NOT RESPOND (N) ===
+- Calling another human: "철수야", "민수 뭐해", "영희 어디야"
+- Humans talking to each other (not involving AI)
+- Monologue/self-talk: "밥 먹으러 간다", "아 피곤해", "화장실 갔다올게"
+- Pure reactions: "ㅋㅋ", "ㅎㅎ", "헐", "ㄹㅇ", "ㄱㄱ"
+- Answering someone else's question (human to human)
+
+=== EXAMPLES ===
+
+[1:1 conversation]
+User: "뭐해?"
+→ Y (1:1, direct question)
+
+[Group chat]
+A: "다들 뭐해?"
+→ W (group question, wait for others)
+
+[Group chat]
+A: "다들 뭐해?"
+B: "나 게임해"
+C: "{ai_name}은 뭐해?"
+→ Y (direct call to AI)
+
+[Group chat]
+A: "철수야 밥 먹었어?"
+→ N (talking to 철수, not AI)
+
+[Group chat]
+A: "ㅋㅋㅋㅋ"
+→ N (just a reaction)
+
+[Group chat]
+A: "아 배고프다"
+→ N (self-talk)
+
+[Group chat - AI was just talking]
+{ai_name}: "오늘 뭐 했어요?"
+A: "나 영화 봤어"
+→ Y (answering AI's question)
+
+[Group chat]
+A: "이거 누가 알아?"
+→ W (group question, AI might know but wait)
+
+=== HUMAN COUNT RULES (excluding you) ===
+1 human (1:1 with you): Almost always Y - user is talking directly to you
+2-3 humans (small group): Y when addressed, W for group questions, N for others' conversations  
+4+ humans (large group): Be more reserved - Y only when directly called, W for group questions, N otherwise
+
+=== DECISION FLOW ===
+1. Check participant count first
+2. Is AI directly called by name? → Y
+3. Is it 1:1 conversation (1명)? → Usually Y
+4. Is it a group question? → W
+5. Is someone talking to another human? → N
+6. Is it self-talk or reaction? → N
+
+Output ONLY: Y, W, or N"""
+
+# Judge User Prompt Template - Dynamic context with conversation history
+JUDGE_USER_TEMPLATE = """[HUMANS IN CHAT: {participant_count}] (excluding you)
+{context_hint}
+
+[CONVERSATION FLOW]
 {conversation_history}
 
-[CURRENT MESSAGE - Judge this one]
+[NEW MESSAGE TO JUDGE]
 {current_speaker}: {current_message}
 
-Should AI ({ai_name}) respond to the CURRENT MESSAGE?
-
-RESPOND (Y):
-- Questions (who, what, where, when, why, how, 뭐, 어디, 누구, 왜, 언제, 어떻게, ?)
-- Requests or commands
-- Direct address to AI or "{ai_name}"
-- In 1:1 conversation: respond to almost everything
-- Continuing conversation after AI spoke
-
-DO NOT RESPOND (N):
-- Calling another person by name (e.g., "Hey John...")
-- People talking among themselves (not to AI)
-- Short reactions only: "ok", "hmm", "lol", "ㅋㅋ", "ㅎㅎ"
-
-If in doubt, respond (Y).
-Output only 'Y' or 'N'."""
+Who is {current_speaker} talking to? Should {ai_name} respond?
+Output Y (immediate), W (wait), or N (no):"""
 
 # Response Prompt Template - Clearly separates context from current message
 RESPONSE_CONTEXT_TEMPLATE = """[CONVERSATION HISTORY - For context only]

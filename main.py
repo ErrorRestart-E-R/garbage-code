@@ -19,6 +19,7 @@ import config
 import asyncio
 import sys
 import logging
+import time
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -80,6 +81,10 @@ class ConversationController:
         self.message_counter = 0  # Unique message ID
         self.last_judged_index = 0  # Last message index we judged
         
+        # Wait state for W (wait and see) responses
+        self.pending_wait: Optional[PendingResponse] = None
+        self.wait_start_time: float = 0
+        
         # Result queue from STT process (set externally)
         self.result_queue: Optional[multiprocessing.Queue] = None
     
@@ -137,13 +142,15 @@ class ConversationController:
     
     async def judge_worker(self):
         """
-        Worker 2: Judge whether AI should respond
+        Worker 2: Judge whether AI should respond (Y/W/N system)
         
-        - Polls for new messages when not responding
-        - Waits until response completes, then checks latest history
-        - Uses all accumulated messages for context
+        - Y: Respond immediately
+        - W: Wait and see (respond after silence timeout)
+        - N: Do not respond
+        
+        Handles pending wait responses and silence detection.
         """
-        logger.info("Judge worker started")
+        logger.info("Judge worker started (Y/W/N system)")
         
         while True:
             try:
@@ -152,12 +159,72 @@ class ConversationController:
                     await asyncio.sleep(0.1)
                     continue
                 
-                # Check if there are new messages since last judgment
+                # Check pending wait response (silence detection)
+                if self.pending_wait:
+                    elapsed = time.time() - self.wait_start_time
+                    
+                    # Check if there are new messages (reset timer or override)
+                    if self.message_counter > self.last_judged_index:
+                        # New message arrived while waiting
+                        history_text, current_speaker, current_message = \
+                            self.history.get_history_and_current()
+                        
+                        if current_speaker and current_message:
+                            current_index = self.message_counter
+                            self.last_judged_index = current_index
+                            
+                            # Judge the new message
+                            participant_count = self.history.get_participant_count()
+                            decision, reason = await judge_conversation(
+                                conversation_history=history_text,
+                                current_speaker=current_speaker,
+                                current_message=current_message,
+                                participant_count=participant_count
+                            )
+                            
+                            print(f"  [Judge: {decision}]")
+                            logger.debug(f"Judge #{current_index} (during wait): {decision} - {reason}")
+                            
+                            if decision == "Y":
+                                # Direct call - cancel wait, respond to new message immediately
+                                self.pending_wait = None
+                                pending = PendingResponse(
+                                    speaker=current_speaker,
+                                    message=current_message,
+                                    history_json=history_text,
+                                    message_index=current_index
+                                )
+                                await self.response_queue.put(pending)
+                                continue
+                            elif decision == "W":
+                                # Another wait - reset timer, keep waiting
+                                if config.WAIT_TIMER_RESET_ON_MESSAGE:
+                                    self.wait_start_time = time.time()
+                                continue
+                            else:  # N
+                                # Not for AI - reset timer, keep waiting for original
+                                if config.WAIT_TIMER_RESET_ON_MESSAGE:
+                                    self.wait_start_time = time.time()
+                                continue
+                    
+                    # Check silence timeout
+                    if elapsed >= config.WAIT_RESPONSE_TIMEOUT:
+                        # Silence timeout - execute pending wait response
+                        print(f"  [Wait timeout: responding]")
+                        logger.debug(f"Wait timeout after {elapsed:.1f}s, executing pending response")
+                        await self.response_queue.put(self.pending_wait)
+                        self.pending_wait = None
+                        continue
+                    
+                    await asyncio.sleep(0.1)
+                    continue
+                
+                # No pending wait - check for new messages
                 if self.message_counter <= self.last_judged_index:
                     await asyncio.sleep(0.1)
                     continue
                 
-                # Get the latest history state (includes all accumulated messages)
+                # Get the latest history state
                 history_text, current_speaker, current_message = \
                     self.history.get_history_and_current()
                 
@@ -172,7 +239,7 @@ class ConversationController:
                 # Call Judge LLM with latest context
                 participant_count = self.history.get_participant_count()
                 
-                should_respond, reason = await judge_conversation(
+                decision, reason = await judge_conversation(
                     conversation_history=history_text,
                     current_speaker=current_speaker,
                     current_message=current_message,
@@ -180,20 +247,26 @@ class ConversationController:
                 )
                 
                 # Print Judge decision to terminal
-                judge_result = "Y" if should_respond else "N"
-                print(f"  [Judge: {judge_result}]")
+                print(f"  [Judge: {decision}]")
+                logger.debug(f"Judge #{current_index}: {decision} - {reason}")
                 
-                logger.debug(f"Judge #{current_index}: {should_respond} - {reason}")
+                # Create pending response
+                pending = PendingResponse(
+                    speaker=current_speaker,
+                    message=current_message,
+                    history_json=history_text,
+                    message_index=current_index
+                )
                 
-                if should_respond:
-                    # Queue response with latest history
-                    pending = PendingResponse(
-                        speaker=current_speaker,
-                        message=current_message,
-                        history_json=history_text,
-                        message_index=current_index
-                    )
+                if decision == "Y":
+                    # Respond immediately
                     await self.response_queue.put(pending)
+                elif decision == "W":
+                    # Enter wait state
+                    self.pending_wait = pending
+                    self.wait_start_time = time.time()
+                    logger.debug(f"Entering wait state for message #{current_index}")
+                # N: do nothing
                 
             except Exception as e:
                 logger.error(f"Judge worker error: {e}", exc_info=True)

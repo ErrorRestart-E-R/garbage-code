@@ -23,7 +23,7 @@ logger = setup_logger(__name__, config.LOG_FILE, config.LOG_LEVEL)
 async def judge_conversation(conversation_history: str,
                               current_speaker: str,
                               current_message: str,
-                              participant_count: int = 1) -> Tuple[bool, str]:
+                              participant_count: int = 1) -> Tuple[str, str]:
     """
     Analyzes conversation to determine if AI should respond to the CURRENT message.
     
@@ -34,8 +34,8 @@ async def judge_conversation(conversation_history: str,
         participant_count: Number of participants
         
     Returns:
-        (should_respond, reason)
-        - should_respond: True if should respond
+        (decision, reason)
+        - decision: "Y" (respond immediately), "W" (wait and see), "N" (don't respond)
         - reason: Judgment reason (for debugging)
     """
     try:
@@ -49,8 +49,12 @@ async def judge_conversation(conversation_history: str,
         else:
             context_hint = config.JUDGE_CONTEXT_LARGE_GROUP
         
-        # Build prompt from template - clearly separates history from current
-        prompt = config.JUDGE_PROMPT_TEMPLATE.format(
+        # Build system prompt (fixed rules)
+        system_content = config.JUDGE_SYSTEM_PROMPT.format(ai_name=config.AI_NAME)
+        
+        # Build user prompt (dynamic context with history)
+        user_content = config.JUDGE_USER_TEMPLATE.format(
+            participant_count=participant_count,
             context_hint=context_hint,
             conversation_history=conversation_history,
             current_speaker=current_speaker,
@@ -62,7 +66,10 @@ async def judge_conversation(conversation_history: str,
 
         response = await client.chat(
             model=config.LLM_MODEL_NAME,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": user_content}
+            ],
             think=False,  
             options={
                 "temperature": config.LLM_JUDGE_TEMPERATURE,
@@ -78,17 +85,25 @@ async def judge_conversation(conversation_history: str,
             
         clean_result = result.strip().upper()
         
-        should_respond = "Y" in clean_result
-        reason = "Judge: " + ("should respond" if should_respond else "should not respond")
+        # Determine decision: Y, W, or N
+        if "Y" in clean_result:
+            decision = "Y"
+            reason = "Judge: respond immediately"
+        elif "W" in clean_result:
+            decision = "W"
+            reason = "Judge: wait and see"
+        else:
+            decision = "N"
+            reason = "Judge: do not respond"
         
-        logger.debug(f"Judge raw: '{result[:100]}...' -> clean: '{clean_result}' -> {should_respond}")
+        logger.debug(f"Judge raw: '{result}' -> decision: {decision}")
         
-        return should_respond, reason
+        return decision, reason
         
     except Exception as e:
         logger.error(f"Judge error: {e}")
         # Default to not responding on error
-        return False, f"Judge error: {e}"
+        return "N", f"Judge error: {e}"
 
 
 async def get_response_stream(user_name: str,
