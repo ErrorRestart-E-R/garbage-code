@@ -12,7 +12,6 @@ to prevent LLM from responding to past messages.
 import ollama
 import config
 import json
-import re
 import mcp_library
 from typing import Tuple, AsyncGenerator
 from logger import setup_logger
@@ -64,6 +63,7 @@ async def judge_conversation(conversation_history: str,
         response = await client.chat(
             model=config.LLM_MODEL_NAME,
             messages=[{"role": "user", "content": prompt}],
+            think=False,  
             options={
                 "temperature": config.LLM_JUDGE_TEMPERATURE,
                 "num_predict": config.LLM_JUDGE_MAX_TOKENS
@@ -75,15 +75,8 @@ async def judge_conversation(conversation_history: str,
             result = response.message.content.strip()
         else:
             result = response['message']['content'].strip()
-        
-        # Remove qwen3 thinking tags if present
-        clean_result = re.sub(r'<think>.*?</think>', '', result, flags=re.DOTALL).strip().upper()
-        
-        # If empty after removing think tags, check original for Y/N outside tags
-        if not clean_result:
-            # Fallback: look for Y or N anywhere after </think>
-            after_think = re.sub(r'<think>.*?</think>', '', result, flags=re.DOTALL)
-            clean_result = after_think.strip().upper() if after_think else result.upper()
+            
+        clean_result = result.strip().upper()
         
         should_respond = "Y" in clean_result
         reason = "Judge: " + ("should respond" if should_respond else "should not respond")
@@ -146,6 +139,7 @@ async def get_response_stream(user_name: str,
             "model": config.LLM_MODEL_NAME,
             "messages": messages,
             "stream": True,
+            "think": False, 
             "options": {"temperature": config.LLM_RESPONSE_TEMPERATURE}
         }
         if tools:
@@ -197,6 +191,7 @@ async def get_response_stream(user_name: str,
                 model=config.LLM_MODEL_NAME,
                 messages=messages,
                 stream=True,
+                think=False,
                 options={"temperature": config.LLM_RESPONSE_TEMPERATURE}
             ):
                 if hasattr(part, 'message'):
@@ -232,85 +227,3 @@ def _get_tool_call_info(tool_call) -> Tuple[str, dict]:
             args = {}
     
     return name, args
-
-
-# Legacy compatibility functions (for gradual migration)
-async def get_llm_response_stream(user_input_json: str, system_context: str):
-    """
-    Legacy API compatibility function
-    
-    For new code, use get_response_stream() directly.
-    """
-    try:
-        client = ollama.AsyncClient(host=config.OLLAMA_HOST)
-        tools = mcp_library.get_tools() if config.ENABLE_MCP_TOOLS else None
-        
-        messages = [
-            {'role': 'system', 'content': config.SYSTEM_PROMPT + "\n" + system_context},
-            {'role': 'user', 'content': user_input_json}
-        ]
-        
-        chat_kwargs = {
-            "model": config.LLM_MODEL_NAME,
-            "messages": messages,
-            "stream": True,
-            "options": {"temperature": config.LLM_RESPONSE_TEMPERATURE}
-        }
-        if tools:
-            chat_kwargs["tools"] = tools
-        
-        tool_calls = []
-        content_buffer = ""
-        has_yielded = False
-        
-        async for part in await client.chat(**chat_kwargs):
-            if hasattr(part, 'message'):
-                content = part.message.content or ""
-                if hasattr(part.message, 'tool_calls') and part.message.tool_calls:
-                    tool_calls = part.message.tool_calls
-            else:
-                content = part.get('message', {}).get('content', '')
-                if 'tool_calls' in part.get('message', {}):
-                    tool_calls = part['message']['tool_calls']
-            
-            if content:
-                content_buffer += content
-                has_yielded = True
-                yield content
-        
-        if tool_calls and not has_yielded:
-            for tool_call in tool_calls:
-                func_name, func_args = _get_tool_call_info(tool_call)
-                
-                if func_name:
-                    logger.debug(f"Tool call: {func_name}({func_args})")
-                    tool_result = mcp_library.execute_tool(func_name, func_args)
-                    logger.debug(f"Tool result: {tool_result}")
-                    
-                    messages.append({
-                        'role': 'assistant',
-                        'content': content_buffer,
-                        'tool_calls': [tool_call]
-                    })
-                    messages.append({
-                        'role': 'tool',
-                        'content': tool_result
-                    })
-            
-            async for part in await client.chat(
-                model=config.LLM_MODEL_NAME,
-                messages=messages,
-                stream=True,
-                options={"temperature": config.LLM_RESPONSE_TEMPERATURE}
-            ):
-                if hasattr(part, 'message'):
-                    content = part.message.content
-                else:
-                    content = part.get('message', {}).get('content')
-                
-                if content:
-                    yield content
-                    
-    except Exception as e:
-        logger.error(f"LLM stream error: {e}")
-        yield None

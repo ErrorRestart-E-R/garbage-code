@@ -11,9 +11,9 @@ COMMAND_PREFIX = "!"
 ENABLE_PREFLIGHT_CHECKS = os.getenv("ENABLE_PREFLIGHT_CHECKS", "false").lower() == "true"
 
 # STT Configuration
-STT_MODEL_ID = "deepdml/faster-whisper-large-v3-turbo-ct2"
+STT_MODEL_ID = "distil-whisper/distil-large-v3.5" #deepdml/faster-whisper-large-v3-turbo-ct2
 STT_DEVICE = "cuda"
-STT_COMPUTE_TYPE = "float16"
+STT_COMPUTE_TYPE = "float16" #int8
 STT_LANGUAGE = "ko"
 STT_BEAM_SIZE = 1
 
@@ -26,12 +26,12 @@ USER_TIMEOUT_SECONDS = 60
 
 # LLM Configuration
 OLLAMA_HOST = "http://192.168.45.28:11434"
-LLM_MODEL_NAME = "qwen3:8b"
+LLM_MODEL_NAME = "gemma3:4b"
 LLM_RESPONSE_TEMPERATURE = 0.8 # Higher temperature for creative responses
 
 # LLM Temperature Settings
-LLM_JUDGE_TEMPERATURE = 0.1  # Low temperature for consistent judgment
-LLM_JUDGE_MAX_TOKENS = 1024  # Increased for qwen3 thinking mode
+LLM_JUDGE_TEMPERATURE = 0.1  
+LLM_JUDGE_MAX_TOKENS = 10  # think=False so only need Y/N
 
 # Mem0 Memory Configuration
 OLLAMA_EMBEDDING_HOST = "http://192.168.45.181:11434"
@@ -106,9 +106,8 @@ Do not add unnecessary trailing questions.
 """
 
 # Judge Prompt Template - Clearly indicates which message to judge
-# /no_think disables qwen3 thinking mode for faster Y/N response
-JUDGE_PROMPT_TEMPLATE = """/no_think
-{context_hint}
+# Thinking mode disabled via API (think=False)
+JUDGE_PROMPT_TEMPLATE = """{context_hint}
 
 [CONVERSATION HISTORY - For context only]
 {conversation_history}
