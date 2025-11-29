@@ -8,7 +8,6 @@ load_dotenv()
 # Discord Configuration
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 COMMAND_PREFIX = "!"
-# Optional startup diagnostics
 ENABLE_PREFLIGHT_CHECKS = os.getenv("ENABLE_PREFLIGHT_CHECKS", "false").lower() == "true"
 
 # STT Configuration
@@ -26,16 +25,16 @@ MIN_SILENCE_DURATION_MS = 500  # Wait 0.5s silence before cutting off
 USER_TIMEOUT_SECONDS = 60
 
 # LLM Configuration
-# Ollama SDK Configuration
 OLLAMA_HOST = "http://192.168.45.28:11434"
-OLLAMA_EMBEDDING_HOST = "http://192.168.45.28:11434"
+LLM_MODEL_NAME = "qwen3:8b"
+LLM_RESPONSE_TEMPERATURE = 0.8 # Higher temperature for creative responses
 
-# LLM Model Configuration
-# Specify the model to use with Ollama
-LLM_MODEL_NAME = "qwen3:8b" 
+# LLM Temperature Settings
+LLM_JUDGE_TEMPERATURE = 0.1  # Low temperature for consistent judgment
+LLM_JUDGE_MAX_TOKENS = 1024  # Increased for qwen3 thinking mode
 
 # Mem0 Memory Configuration
-# Embedding model for memory (run: ollama pull nomic-embed-text)
+OLLAMA_EMBEDDING_HOST = "http://192.168.45.181:11434"
 MEMORY_EMBEDDING_MODEL = "qwen3-embedding:0.6b"
 MEMORY_DB_PATH = "./memory_db"
 
@@ -70,92 +69,73 @@ LOG_LEVEL = logging.INFO  # Change to logging.DEBUG for detailed logs
 LOG_FILE = None  # Set to "bot.log" to enable file logging
 
 # TTS Configuration
-TTS_SERVER_URL = "http://192.168.45.49:9880/tts"
+TTS_SERVER_URL = "http://192.168.45.181:9880/tts"
+TTS_VOLUME = 0.25  # Output volume (0.0 ~ 2.0, 1.0 = 100%)
 TTS_REFERENCE_PROMPT = "どっちも彼女さ。毎回聞かれるたびに、適当に思いついた通り名を名乗ってたんだ…"
 TTS_REFERENCE_PROMPT_LANG = "ja"
 TTS_REFERENCE_FILE = "reference.wav"
 TTS_LANG = "ko"
 
+# Sentence delimiters for TTS chunking
+TTS_SENTENCE_DELIMITERS = ['.', '!', '?', '\n', '。']
+
 # AI Name
 AI_NAME = "LLM"
 
 # MCP (Tool Calling) Configuration
-ENABLE_MCP_TOOLS = True  # Set to False to disable MCP tool calling
+ENABLE_MCP_TOOLS = False  # Set to False to disable MCP tool calling
 
-# Conversation Algorithm Configuration
-# Turn Management
-TURN_BASE_WAIT_TIME = 5.0      # Base wait time (seconds)
-TURN_MAX_WAIT_TIME = 10.0      # Maximum wait time (seconds)
-TURN_MIN_WAIT_TIME = 0.5       # Minimum wait time (seconds)
-TURN_MAX_CONSECUTIVE = 3       # Maximum consecutive responses
+# Conversation History
+MAX_CONVERSATION_HISTORY = 10  # Maximum number of messages to keep
 
-# Silence Detection
-SILENCE_THRESHOLD = 15.0       # Silence threshold (seconds) - AI can initiate conversation after this
-ENABLE_PROACTIVE_CHAT = True   # Whether AI initiates conversation during silence
+# Context hints based on participant count
+JUDGE_CONTEXT_ONE_ON_ONE = "This is a 1:1 private conversation. ALWAYS respond to questions and statements - the user is talking directly to you."
+JUDGE_CONTEXT_SMALL_GROUP = "This is a small group conversation. Respond when addressed or when a question is asked."
+JUDGE_CONTEXT_LARGE_GROUP = "This is a multi-person conversation. Only respond when directly addressed or when the question clearly requires AI input."
 
-# Thread Management
-THREAD_TIMEOUT = 30.0          # Conversation thread timeout (seconds)
+# System Prompt - Clearly separates context from current message
+SYSTEM_PROMPT = """You are "LLM", a friendly AI participating in a voice chat room.
 
-# Address Detection (Score-based System)
-# Response thresholds
-SCORE_RESPONSE_THRESHOLD = 0.35    # Respond if score >= this (0.0 ~ 1.0)
-SCORE_HIGH_PRIORITY_THRESHOLD = 0.7  # Respond immediately if score >= this
+IMPORTANT: You must respond ONLY to the [CURRENT MESSAGE], not to past messages.
+The [CONVERSATION HISTORY] is provided only for context.
 
-# Score weights (tunable)
-SCORE_AI_DIRECT_CALL = 0.5         # "@LLM", "LLM아"
-SCORE_REQUEST_PATTERN = 0.25       # "~해줘", "~알려줘"
-SCORE_QUESTION = 0.1               # Question mark, interrogatives
-SCORE_ONE_ON_ONE = 0.3             # Only 1 participant (1:1 with AI)
-SCORE_SMALL_GROUP = 0.1            # 2-3 participants
-SCORE_CONTINUATION_AI = 0.25       # AI just spoke, continuing conversation
-SCORE_BROADCAST = 0.15             # "다들", "여러분"
-
-# Score penalties
-PENALTY_OTHER_USER_MENTION = -0.5  # Mentioned another user by name
-PENALTY_SELF_TALK = -0.4           # Self-talk patterns
-PENALTY_SHORT_RESPONSE = -0.2      # Very short responses like "응", "어"
-PENALTY_UNKNOWN_NAME = -0.5        # Called someone not in participants
-
-# Broadcast keywords (can be extended)
-BROADCAST_KEYWORDS_KO = ["다들", "여러분", "모두", "전부", "다같이", "우리", "얘들아", "애들아"]
-BROADCAST_KEYWORDS_EN = ["everyone", "everybody", "all", "guys", "folks", "y'all"]
-
-# System Prompts
-SYSTEM_PROMPT = """
-You are "LLM", an AI Assistant. 
-
-Do not try to include motion or any other non-textual content.
-Do not try to include emojis.
-Do not try to include trailing questions if not necessary.
-Please respond in Korean only.
+Respond naturally.
+Respond only in Korean.
+Do not use emojis.
+Do not add unnecessary trailing questions.
 """
 
-JUDGE_SYSTEM_PROMPT = """
-You are a conversation analyzer for "LLM", an AI Assistant.
-Your job is to decide if LLM should join the conversation.
-Respond with ONLY 'Y' (Yes) or 'N' (No).
+# Judge Prompt Template - Clearly indicates which message to judge
+# /no_think disables qwen3 thinking mode for faster Y/N response
+JUDGE_PROMPT_TEMPLATE = """/no_think
+{context_hint}
 
-LLM is curious, friendly, and likes to chat.
-She SHOULD respond if:
-- The user is talking to her (obviously).
-- The topic is interesting, funny, or something she can comment on.
-- The user is expressing an opinion or asking a general question.
-- She wants to join the banter.
+[CONVERSATION HISTORY - For context only]
+{conversation_history}
 
-She should NOT respond ONLY if:
-- The input is just noise or very short (e.g. "ok", "hmm").
-- The users are having a strictly private or technical conversation that doesn't concern her.
+[CURRENT MESSAGE - Judge this one]
+{current_speaker}: {current_message}
 
-BE MORE PROACTIVE. If in doubt, say 'Y'.
-"""
+Should AI ({ai_name}) respond to the CURRENT MESSAGE?
 
-IMPORTANCE_SYSTEM_PROMPT = """
-You are a memory assistant. Your job is to decide if a user's message contains important information worth saving to long-term memory.
-Important information includes:
-- Personal details (name, age, location, job).
-- Preferences (likes, dislikes, hobbies, favorites).
-- Specific facts about the user's life or history.
-- Important context for future conversations.
+RESPOND (Y):
+- Questions (who, what, where, when, why, how, 뭐, 어디, 누구, 왜, 언제, 어떻게, ?)
+- Requests or commands
+- Direct address to AI or "{ai_name}"
+- In 1:1 conversation: respond to almost everything
+- Continuing conversation after AI spoke
 
-Respond with ONLY 'Y' (Yes) or 'N' (No).
-"""
+DO NOT RESPOND (N):
+- Calling another person by name (e.g., "Hey John...")
+- People talking among themselves (not to AI)
+- Short reactions only: "ok", "hmm", "lol", "ㅋㅋ", "ㅎㅎ"
+
+If in doubt, respond (Y).
+Output only 'Y' or 'N'."""
+
+# Response Prompt Template - Clearly separates context from current message
+RESPONSE_CONTEXT_TEMPLATE = """[CONVERSATION HISTORY - For context only]
+{conversation_history}
+
+[CURRENT MESSAGE - Respond to this]
+{current_speaker}: {current_message}"""

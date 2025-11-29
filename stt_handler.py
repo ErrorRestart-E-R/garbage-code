@@ -102,22 +102,58 @@ def transcribe_and_send(model, user_id, audio_data, result_queue):
     data_s16 = np.frombuffer(audio_data, dtype=np.int16)
     data_f32 = data_s16.astype(np.float32) / 32768.0
     
+    # Check audio energy (RMS) - filter out noise/silence
+    rms = np.sqrt(np.mean(data_f32 ** 2))
+    if rms < 0.01:  # Too quiet, likely noise or silence
+        logger.debug(f"Audio too quiet (RMS={rms:.4f}), skipping")
+        return
+    
     start_time = time.time()
     try:
-        segments, info = model.transcribe(data_f32, language=config.STT_LANGUAGE, beam_size=config.STT_BEAM_SIZE)
+        segments, info = model.transcribe(
+            data_f32, 
+            language=config.STT_LANGUAGE, 
+            beam_size=config.STT_BEAM_SIZE,
+            vad_filter=True,  # Enable Whisper's built-in VAD
+            vad_parameters=dict(min_silence_duration_ms=500)
+        )
+        
         text = ""
+        no_speech_prob_sum = 0
+        segment_count = 0
+        
         for segment in segments:
+            # Check no_speech_probability - high value means likely hallucination
+            if segment.no_speech_prob > 0.7:
+                logger.debug(f"Skipping segment with high no_speech_prob: {segment.no_speech_prob:.2f}")
+                continue
             text += segment.text
+            no_speech_prob_sum += segment.no_speech_prob
+            segment_count += 1
         
         end_time = time.time()
         duration = end_time - start_time
         
-        if text.strip():
+        text = text.strip()
+        
+        # Filter known hallucination patterns (repeated phrases)
+        hallucination_patterns = [
+            "감사합니다", "시청해 주셔서 감사합니다", "구독과 좋아요",
+            "Thank you", "Thanks for watching", "Subscribe"
+        ]
+        
+        if text:
+            # Check if text is just a repeated hallucination
+            for pattern in hallucination_patterns:
+                if text == pattern or text.count(pattern) > 1:
+                    logger.debug(f"Filtered hallucination: '{text}'")
+                    return
+            
             logger.debug(f"Transcription successful for user {user_id}")
-            logger.debug(f"Transcription: {text.strip()}")
+            logger.debug(f"Transcription: {text} (avg no_speech_prob: {no_speech_prob_sum/max(segment_count,1):.2f})")
             result_queue.put({
                 "user_id": user_id,
-                "text": text.strip(),
+                "text": text,
                 "latency": f"{duration:.3f}s"
             })
     except Exception as e:

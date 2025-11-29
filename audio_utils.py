@@ -3,6 +3,7 @@ from discord.ext.voice_recv import AudioSink, VoiceData
 import discord
 import asyncio
 import io
+import config
 
 class STTSink(AudioSink):
     def __init__(self, audio_queue):
@@ -62,6 +63,9 @@ class AudioPlayer:
         # Convert bytes to AudioSource (WAV -> PCM)
         # FFmpegPCMAudio handles WAV headers automatically
         audio_source = discord.FFmpegPCMAudio(io.BytesIO(audio_data), pipe=True)
+        
+        # Apply volume control
+        audio_source = discord.PCMVolumeTransformer(audio_source, volume=config.TTS_VOLUME)
         
         if self.voice_client and self.voice_client.is_connected():
             self.voice_client.play(audio_source, after=self._after_play)
