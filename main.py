@@ -72,14 +72,13 @@ class ConversationController:
             config.TTS_REFERENCE_PROMPT_LANG
         )
         
-        # Async queues for worker communication
-        self.judge_queue: asyncio.Queue = asyncio.Queue()
+        # Async queue for response worker
         self.response_queue: asyncio.Queue = asyncio.Queue()
         
         # State
         self.is_responding = False
         self.message_counter = 0  # Unique message ID
-        self.last_responded_index = -1  # Last message index we responded to
+        self.last_judged_index = 0  # Last message index we judged
         
         # Result queue from STT process (set externally)
         self.result_queue: Optional[multiprocessing.Queue] = None
@@ -94,7 +93,7 @@ class ConversationController:
         
         - Runs continuously, never blocks
         - Stores all messages regardless of response state
-        - Signals judge_worker for each new message
+        - Judge worker polls for new messages when ready
         """
         logger.info("History worker started")
         
@@ -128,9 +127,6 @@ class ConversationController:
                             self._save_memory_background(user_name, user_text)
                         )
                         
-                        # Signal judge worker
-                        await self.judge_queue.put(self.message_counter)
-                        
                         logger.debug(f"History: Added message #{self.message_counter} from {user_name}")
                 
                 await asyncio.sleep(0.01)  # Yield control
@@ -143,39 +139,41 @@ class ConversationController:
         """
         Worker 2: Judge whether AI should respond
         
-        - Receives signals from history_worker
-        - Skips if already responding (but messages are still recorded)
-        - Puts approved responses in response_queue
+        - Polls for new messages when not responding
+        - Waits until response completes, then checks latest history
+        - Uses all accumulated messages for context
         """
         logger.info("Judge worker started")
         
         while True:
             try:
-                # Wait for new message signal
-                message_index = await self.judge_queue.get()
-                
-                # Skip if already responding
+                # Wait if currently responding
                 if self.is_responding:
-                    logger.debug(f"Judge: Skipping #{message_index} - already responding")
+                    await asyncio.sleep(0.1)
                     continue
                 
-                # Skip if we already responded to a later message
-                if message_index <= self.last_responded_index:
-                    logger.debug(f"Judge: Skipping #{message_index} - already processed")
+                # Check if there are new messages since last judgment
+                if self.message_counter <= self.last_judged_index:
+                    await asyncio.sleep(0.1)
                     continue
                 
-                # Get separated history and current message
-                history_json, current_speaker, current_message = \
+                # Get the latest history state (includes all accumulated messages)
+                history_text, current_speaker, current_message = \
                     self.history.get_history_and_current()
                 
                 if not current_speaker or not current_message:
+                    await asyncio.sleep(0.1)
                     continue
                 
-                # Call Judge LLM
+                # Mark as judged before calling LLM
+                current_index = self.message_counter
+                self.last_judged_index = current_index
+                
+                # Call Judge LLM with latest context
                 participant_count = self.history.get_participant_count()
                 
                 should_respond, reason = await judge_conversation(
-                    conversation_history=history_json,
+                    conversation_history=history_text,
                     current_speaker=current_speaker,
                     current_message=current_message,
                     participant_count=participant_count
@@ -185,15 +183,15 @@ class ConversationController:
                 judge_result = "Y" if should_respond else "N"
                 print(f"  [Judge: {judge_result}]")
                 
-                logger.debug(f"Judge #{message_index}: {should_respond} - {reason}")
+                logger.debug(f"Judge #{current_index}: {should_respond} - {reason}")
                 
                 if should_respond:
-                    # Queue response
+                    # Queue response with latest history
                     pending = PendingResponse(
                         speaker=current_speaker,
                         message=current_message,
-                        history_json=history_json,
-                        message_index=message_index
+                        history_json=history_text,
+                        message_index=current_index
                     )
                     await self.response_queue.put(pending)
                 
@@ -208,7 +206,7 @@ class ConversationController:
         - Receives approved responses from judge_worker
         - Generates LLM response with streaming
         - Plays TTS audio
-        - Other workers continue running during response
+        - When complete, judge_worker will check for new messages
         """
         logger.info("Response worker started")
         
@@ -219,7 +217,6 @@ class ConversationController:
                 
                 # Mark as responding
                 self.is_responding = True
-                self.last_responded_index = pending.message_index
                 
                 try:
                     logger.debug(f"Response: Starting for #{pending.message_index}")
@@ -236,6 +233,7 @@ class ConversationController:
                         logger.debug(f"Response: Completed #{pending.message_index}")
                     
                 finally:
+                    # Mark as not responding - judge_worker will poll for new messages
                     self.is_responding = False
                 
             except Exception as e:
