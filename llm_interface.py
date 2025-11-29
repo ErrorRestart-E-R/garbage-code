@@ -41,28 +41,19 @@ async def judge_conversation(conversation_history: str,
     try:
         client = ollama.AsyncClient(host=config.OLLAMA_HOST)
         
-        # Context hint based on participant count
-        if participant_count <= 1:
-            context_hint = config.JUDGE_CONTEXT_ONE_ON_ONE
-        elif participant_count <= 3:
-            context_hint = config.JUDGE_CONTEXT_SMALL_GROUP
-        else:
-            context_hint = config.JUDGE_CONTEXT_LARGE_GROUP
-        
         # Build system prompt (fixed rules)
         system_content = config.JUDGE_SYSTEM_PROMPT.format(ai_name=config.AI_NAME)
         
         # Build user prompt (dynamic context with history)
         user_content = config.JUDGE_USER_TEMPLATE.format(
             participant_count=participant_count,
-            context_hint=context_hint,
             conversation_history=conversation_history,
             current_speaker=current_speaker,
             current_message=current_message,
             ai_name=config.AI_NAME
         )
         
-        logger.debug(f"Judge context: participants={participant_count}, hint='{context_hint[:50]}...'")
+        logger.debug(f"Judge context: participants={participant_count}")
 
         response = await client.chat(
             model=config.LLM_MODEL_NAME,

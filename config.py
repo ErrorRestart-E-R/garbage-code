@@ -27,11 +27,11 @@ USER_TIMEOUT_SECONDS = 60
 # LLM Configuration
 OLLAMA_HOST = "http://192.168.45.28:11434"
 LLM_MODEL_NAME = "Gemma3-finetune-tools-12b:latest"
-LLM_RESPONSE_TEMPERATURE = 0.8 # Higher temperature for creative responses
+LLM_RESPONSE_TEMPERATURE = 0.9 # Higher temperature for creative responses
 
 # LLM Temperature Settings
-LLM_JUDGE_TEMPERATURE = 0.1  
-LLM_JUDGE_MAX_TOKENS = 10  # think=False so only need Y/W/N
+LLM_JUDGE_TEMPERATURE = 0.6  
+LLM_JUDGE_MAX_TOKENS = 64  
 
 # Wait Response Configuration
 WAIT_RESPONSE_TIMEOUT = 5.0  # Seconds to wait before responding after W judgment
@@ -87,15 +87,13 @@ TTS_SENTENCE_DELIMITERS = ['.', '!', '?', '\n', '。']
 AI_NAME = "LLM"
 
 # MCP (Tool Calling) Configuration
-ENABLE_MCP_TOOLS = True  # Set to False to disable MCP tool calling
+ENABLE_MCP_TOOLS = False  # Set to False to disable MCP tool calling
 
 # Conversation History
 MAX_CONVERSATION_HISTORY = 10  # Maximum number of messages to keep
 
 # Context hints based on participant count
-JUDGE_CONTEXT_ONE_ON_ONE = "This is a 1:1 private conversation. ALWAYS respond to questions and statements - the user is talking directly to you."
-JUDGE_CONTEXT_SMALL_GROUP = "This is a small group conversation. Respond when addressed or when a question is asked."
-JUDGE_CONTEXT_LARGE_GROUP = "This is a multi-person conversation. Only respond when directly addressed or when the question clearly requires AI input."
+
 
 # System Prompt - Clearly separates context from current message
 SYSTEM_PROMPT = """You are "LLM", a friendly AI participating in a voice chat room.
@@ -191,7 +189,6 @@ Output ONLY: Y, W, or N"""
 
 # Judge User Prompt Template - Dynamic context with conversation history
 JUDGE_USER_TEMPLATE = """[HUMANS IN CHAT: {participant_count}] (excluding you)
-{context_hint}
 
 [CONVERSATION FLOW]
 {conversation_history}
