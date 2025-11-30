@@ -24,14 +24,19 @@ MIN_SILENCE_DURATION_MS = 500  # Wait 0.5s silence before cutting off
 # Cleanup Configuration
 USER_TIMEOUT_SECONDS = 60
 
-# LLM Configuration
+# LLM_Response Settings
 OLLAMA_HOST = "http://192.168.45.28:11434"
 LLM_MODEL_NAME = "Gemma3-finetune-tools-12b:latest"
-LLM_RESPONSE_TEMPERATURE = 0.9 # Higher temperature for creative responses
+LLM_RESPONSE_TEMPERATURE = 0.8 
+LLM_RESPONSE_TOP_P = 0.92
+LLM_RESPONSE_TOP_K = 40
+LLM_RESPONSE_REPEAT_PENALTY = 1.05
 
-# LLM Temperature Settings
-LLM_JUDGE_TEMPERATURE = 0.6  
-LLM_JUDGE_MAX_TOKENS = 2048 
+# LLM_Judge Settings
+LLM_JUDGE_TEMPERATURE = 0.2  
+LLM_JUDGE_TOP_P = 0.7
+LLM_JUDGE_TOP_K = 20
+LLM_JUDGE_NUM_PREDICT = 3
 
 # Wait Response Configuration
 WAIT_RESPONSE_TIMEOUT = 5.0  # Seconds to wait before responding after W judgment

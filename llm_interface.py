@@ -64,10 +64,12 @@ async def judge_conversation(conversation_history: str,
                         {"role": "system", "content": system_content},
                         {"role": "user", "content": user_content}
                     ],
-                    think=False,  
                     options={
                         "temperature": config.LLM_JUDGE_TEMPERATURE,
-                        "num_predict": config.LLM_JUDGE_MAX_TOKENS
+                        "top_p": config.LLM_JUDGE_TOP_P,
+                        "top_k": config.LLM_JUDGE_TOP_K,
+                        "num_predict": config.LLM_JUDGE_NUM_PREDICT,
+                        "think": False
                     }
                 )
                 
@@ -164,8 +166,13 @@ async def get_response_stream(user_name: str,
             "model": config.LLM_MODEL_NAME,
             "messages": messages,
             "stream": True,
-            "think": False, 
-            "options": {"temperature": config.LLM_RESPONSE_TEMPERATURE}
+            "options": {
+                "temperature": config.LLM_RESPONSE_TEMPERATURE,
+                "top_p": config.LLM_RESPONSE_TOP_P,
+                "top_k": config.LLM_RESPONSE_TOP_K,
+                "repeat_penalty": config.LLM_RESPONSE_REPEAT_PENALTY,
+                "think": False
+            }
         }
         if tools:
             chat_kwargs["tools"] = tools
@@ -210,14 +217,18 @@ async def get_response_stream(user_name: str,
                         "role": "tool",
                         "content": tool_result
                     })
-            
             # Generate final response with tool results
             async for part in await client.chat(
                 model=config.LLM_MODEL_NAME,
                 messages=messages,
                 stream=True,
-                think=False,
-                options={"temperature": config.LLM_RESPONSE_TEMPERATURE}
+                options={
+                    "temperature": config.LLM_RESPONSE_TEMPERATURE,
+                    "top_p": config.LLM_RESPONSE_TOP_P,
+                    "top_k": config.LLM_RESPONSE_TOP_K,
+                    "repeat_penalty": config.LLM_RESPONSE_REPEAT_PENALTY,
+                    "think": False
+                }
             ):
                 if hasattr(part, 'message'):
                     content = part.message.content
