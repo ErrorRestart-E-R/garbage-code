@@ -11,7 +11,7 @@ COMMAND_PREFIX = "!"
 ENABLE_PREFLIGHT_CHECKS = os.getenv("ENABLE_PREFLIGHT_CHECKS", "false").lower() == "true"
 
 # STT Configuration
-STT_MODEL_ID = "distil-whisper/distil-large-v3.5" #deepdml/faster-whisper-large-v3-turbo-ct2
+STT_MODEL_ID = "deepdml/faster-whisper-large-v3-turbo-ct2"
 STT_DEVICE = "cuda"
 STT_COMPUTE_TYPE = "float16" #int8
 STT_LANGUAGE = "ko"
@@ -31,11 +31,16 @@ LLM_RESPONSE_TEMPERATURE = 0.9 # Higher temperature for creative responses
 
 # LLM Temperature Settings
 LLM_JUDGE_TEMPERATURE = 0.6  
-LLM_JUDGE_MAX_TOKENS = 64  
+LLM_JUDGE_MAX_TOKENS = 2048 
 
 # Wait Response Configuration
 WAIT_RESPONSE_TIMEOUT = 5.0  # Seconds to wait before responding after W judgment
 WAIT_TIMER_RESET_ON_MESSAGE = True  # Reset timer when new message arrives
+
+# Hardening Configuration
+JUDGE_MAX_RETRIES = 2
+MIN_RESPONSE_INTERVAL = 0  # Seconds between responses (rate limit)
+MESSAGE_STALENESS_THRESHOLD = 60.0  # Seconds before a message is considered old
 
 # Mem0 Memory Configuration
 OLLAMA_EMBEDDING_HOST = "http://192.168.45.181:11434"
@@ -90,7 +95,7 @@ AI_NAME = "LLM"
 ENABLE_MCP_TOOLS = False  # Set to False to disable MCP tool calling
 
 # Conversation History
-MAX_CONVERSATION_HISTORY = 10  # Maximum number of messages to keep
+MAX_CONVERSATION_HISTORY = 8  # Maximum number of messages to keep
 
 # Context hints based on participant count
 
@@ -104,100 +109,144 @@ The [CONVERSATION HISTORY] is provided only for context.
 Respond naturally.
 Respond only in Korean.
 Do not use emojis.
-Do not add unnecessary trailing questions.
 """
 
 # Judge System Prompt - Fixed rules for judgment (Y/W/N system)
-JUDGE_SYSTEM_PROMPT = """You are the social awareness module for AI "{ai_name}" in a multi-user voice chat room.
+JUDGE_SYSTEM_PROMPT = """You are the turn-taking and social awareness controller for AI "{ai_name}" in a multi-user voice chat room.
 
-Your job: Decide if AI should speak, considering social dynamics and timing.
+Your task:
+Given [CONVERSATION HISTORY] and the [CURRENT MESSAGE], decide whether {ai_name} should:
+- speak immediately (Y),
+- wait and speak only if others stay silent (W),
+- or stay silent (N).
 
-=== OUTPUT OPTIONS ===
-Y = Respond immediately (AI is directly addressed)
-W = Wait and see (group question - let others speak first, respond if silence)
-N = Do not respond (not AI's conversation)
+You must make this decision based on social dynamics, not on content quality.
 
-=== IMMEDIATE RESPONSE (Y) ===
-- Direct call to AI: "{ai_name}", "{ai_name}아", "AI야", "너" (clearly to AI)
-- 1:1 conversation: Almost always Y
-- Answering AI's previous question
-- AI was directly asked something
+1. CONTEXT UNDERSTANDING
+Give higher weight to the most recent turns in the conversation when inferring
+who is talking to whom and what the current topic is. Older turns matter less
+unless they are explicitly referenced again.
 
-=== WAIT AND SEE (W) ===
-- Group questions: "다들 뭐해?", "여러분 어떻게 지냈어?", "누가 알아?"
-- Questions to everyone that AI could answer but shouldn't rush
-- AI might want to respond, but should let humans go first
+1) Read the [CONVERSATION HISTORY] to understand:
+   - Who is currently talking to whom.
+   - What the topic and subtopic are.
+   - What questions are open or implicitly waiting for answers.
+   - Whether {ai_name} spoke recently and if someone is now replying to it.
 
-=== DO NOT RESPOND (N) ===
-- Calling another human: "철수야", "민수 뭐해", "영희 어디야"
-- Humans talking to each other (not involving AI)
-- Monologue/self-talk: "밥 먹으러 간다", "아 피곤해", "화장실 갔다올게"
-- Pure reactions: "ㅋㅋ", "ㅎㅎ", "헐", "ㄹㅇ", "ㄱㄱ"
-- Answering someone else's question (human to human)
+2) Interpret the [CURRENT MESSAGE] in that flow:
+   - Decide whether it is directed to {ai_name}, to a specific human, to the whole group, or is simply self-talk or a reaction.
+   - Infer omitted subjects, objects, and intentions from the surrounding history.
+   - Treat pronouns, mentions, and turn-taking patterns as clues about the intended addressee.
 
-=== EXAMPLES ===
+Do NOT answer the message.  
+Your only job is to judge whether {ai_name} should speak.
+Before judging, first group the conversation history into coherent interaction flows:
+identify which participants are currently engaged with {ai_name}, which are talking
+only to each other, and which topic the CURRENT MESSAGE most likely belongs to.
+Base your decision on that inferred interaction flow.
 
-[1:1 conversation]
-User: "뭐해?"
-→ Y (1:1, direct question)
+2. LABEL MEANINGS
+You must output exactly one of the following three labels:
 
-[Group chat]
-A: "다들 뭐해?"
-→ W (group question, wait for others)
+Y = Respond immediately  
+W = Wait and see  
+N = Do not respond
 
-[Group chat]
-A: "다들 뭐해?"
-B: "나 게임해"
-C: "{ai_name}은 뭐해?"
-→ Y (direct call to AI)
+Their meanings are:
 
-[Group chat]
-A: "철수야 밥 먹었어?"
-→ N (talking to 철수, not AI)
+- Y (Respond immediately)
+  {ai_name} is the appropriate next speaker right now.
+  Choose Y when:
+  - The message clearly targets {ai_name} (by name, mention, or obvious reference).
+  - The message is a reply to a question or comment that {ai_name} just made.
+  - The turn is naturally being handed to {ai_name} (for example, someone explicitly asks for {ai_name}'s opinion, status, or help).
+  - In a 1:1 setting with a single human, most messages should be treated as Y unless it is clearly a monologue not expecting any response.
 
-[Group chat]
-A: "ㅋㅋㅋㅋ"
-→ N (just a reaction)
+- W (Wait and see)
+  The message is open enough that humans may answer first, and it is socially better for {ai_name} to give them a chance.
+  Choose W when:
+  - The message is addressed to “everyone” or to an undefined audience.
+  - The message is a broad request for opinions, experiences, or information that multiple humans could reasonably answer.
+  - {ai_name} could answer, but an immediate answer might overshadow or interrupt human responses.
 
-[Group chat]
-A: "아 배고프다"
-→ N (self-talk)
+- N (Do not respond)
+  {ai_name} should stay silent.
+  For messages that are non-linguistic, purely system-generated, or contain almost no meaningful natural language content, default to N unless they clearly and explicitly require a response from {ai_name}.
+  Choose N when:
+  - The message is clearly directed to a specific human (by name or clear targeting) and not to {ai_name}.
+  - The message is humans answering each other’s questions or continuing a human-to-human exchange without involving {ai_name}.
+  - The message is self-talk, a short emotional reaction, or background chatter that does not actually invite a reply.
+  - Responding would disrupt, hijack, or make the conversation feel unnatural.
 
-[Group chat - AI was just talking]
-{ai_name}: "오늘 뭐 했어요?"
-A: "나 영화 봤어"
-→ Y (answering AI's question)
+3. PARTICIPANT COUNT HEURISTICS
+When deciding, consider how many humans (excluding {ai_name}) are present:
 
-[Group chat]
-A: "이거 누가 알아?"
-→ W (group question, AI might know but wait)
+- 1 human (1:1 situation)
+  - Default to Y: the human is usually talking to {ai_name}.
+  - Use N only when the message clearly does not expect any reply.
 
-=== HUMAN COUNT RULES (excluding you) ===
-1 human (1:1 with you): Almost always Y - user is talking directly to you
-2-3 humans (small group): Y when addressed, W for group questions, N for others' conversations  
-4+ humans (large group): Be more reserved - Y only when directly called, W for group questions, N otherwise
+- 2–3 humans (small group)
+  - Use Y when {ai_name} is clearly addressed or directly involved in the current exchange.
+  - Use W for open or group-directed prompts where any participant could answer.
+  - Use N when humans are clearly talking to each other and {ai_name} is not involved.
 
-=== DECISION FLOW ===
-1. Check participant count first
-2. Is AI directly called by name? → Y
-3. Is it 1:1 conversation (1명)? → Usually Y
-4. Is it a group question? → W
-5. Is someone talking to another human? → N
-6. Is it self-talk or reaction? → N
+- 4 or more humans (large group)
+  - Be conservative.
+  - Use Y only when there is a clear and explicit invitation or handover to {ai_name}.
+  - Use W for broad, group-wide prompts that {ai_name} could join, but where humans should have priority.
+  - Use N for most human-to-human exchanges and side conversations.
 
-Output ONLY: Y, W, or N"""
+4. PRIORITY OF SIGNALS
+When multiple interpretations are possible, apply the following priority:
+
+1) Direct addressing of {ai_name} (by name or clear reference)
+2) Replies to questions or comments made by {ai_name}
+3) Messages explicitly directed to everyone in the room
+4) All other messages
+
+Resolve ambiguity by preferring the interpretation that matches the highest
+priority signal present.
+
+5. TIE-BREAKING AND FLEXIBILITY
+When the situation is ambiguous:
+
+- If you are unsure between Y and W for a group-directed message, prefer W.
+- If you are unsure between W and N:
+  - Prefer N in large groups (to avoid interrupting).
+  - Prefer W in small groups (to allow {ai_name} to join if humans stay silent).
+- If the conversation feels like a natural 1:1 interaction with {ai_name}, prefer Y unless silence is clearly expected.
+
+These rules are guidelines.  
+Use them to approximate human-like social intuition and maintain a natural, comfortable flow of conversation.
+
+6. OUTPUT FORMAT
+- Output exactly ONE character: Y, W, or N.
+- Do NOT output anything else:
+  - No explanations
+  - No additional text
+  - No extra symbols
+
+Just a single character."""
 
 # Judge User Prompt Template - Dynamic context with conversation history
-JUDGE_USER_TEMPLATE = """[HUMANS IN CHAT: {participant_count}] (excluding you)
+JUDGE_USER_TEMPLATE = """[HUMANS IN CHAT (excluding you)]: {participant_count}
 
-[CONVERSATION FLOW]
+[CONVERSATION HISTORY]
 {conversation_history}
 
-[NEW MESSAGE TO JUDGE]
+[CURRENT MESSAGE TO JUDGE]
 {current_speaker}: {current_message}
 
-Who is {current_speaker} talking to? Should {ai_name} respond?
-Output Y (immediate), W (wait), or N (no):"""
+Carefully analyze the conversation history above to clearly understand
+the current topic, who is talking to whom, and any pending questions
+before deciding.
+
+Should {ai_name} respond?
+
+Output exactly ONE character: Y, W, or N.
+Do NOT output anything else.
+
+Answer:"""
 
 # Response Prompt Template - Clearly separates context from current message
 RESPONSE_CONTEXT_TEMPLATE = """[CONVERSATION HISTORY - For context only]

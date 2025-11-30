@@ -6,6 +6,7 @@ This history is used for LLM Judge and response generation.
 """
 
 import datetime
+import time
 import json
 from collections import deque
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ class ConversationEntry:
     speaker: str
     text: str
     timestamp: str
+    raw_timestamp: float = 0.0
     is_ai: bool = False
 
 
@@ -55,6 +57,7 @@ class ConversationHistory:
             speaker=speaker,
             text=text,
             timestamp=datetime.datetime.now().strftime("%H:%M:%S"),
+            raw_timestamp=time.time(),
             is_ai=(speaker == self.ai_name)
         )
         self.history.append(entry)
@@ -74,19 +77,20 @@ class ConversationHistory:
         """
         return self.add(self.ai_name, text)
     
-    def get_history_and_current(self) -> Tuple[str, Optional[str], Optional[str]]:
+    def get_history_and_current(self) -> Tuple[str, Optional[str], Optional[str], float]:
         """
         Get conversation history (excluding last) and current message separately.
         This prevents LLM from confusing past messages with the current one.
         
         Returns:
-            (history_text, current_speaker, current_message)
+            (history_text, current_speaker, current_message, current_timestamp)
             - history_text: Past conversations in simple text format
             - current_speaker: Last speaker name (or None if empty)
             - current_message: Last message text (or None if empty)
+            - current_timestamp: Raw timestamp of the current message
         """
         if not self.history:
-            return "(no previous conversation)", None, None
+            return "(no previous conversation)", None, None, 0.0
         
         # Separate history (all but last) from current (last)
         history_list = list(self.history)
@@ -94,7 +98,7 @@ class ConversationHistory:
         if len(history_list) == 1:
             # Only one message - no history, just current
             current = history_list[0]
-            return "(no previous conversation)", current.speaker, current.text
+            return "(no previous conversation)", current.speaker, current.text, current.raw_timestamp
         
         # History = all except last (simple text format)
         lines = []
@@ -107,7 +111,8 @@ class ConversationHistory:
         return (
             "\n".join(lines),
             current.speaker,
-            current.text
+            current.text,
+            current.raw_timestamp
         )
     
     def to_json(self) -> str:

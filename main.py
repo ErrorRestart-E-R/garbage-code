@@ -78,6 +78,7 @@ class ConversationController:
         self.is_responding = False
         self.message_counter = 0  # Unique message ID
         self.last_judged_index = 0  # Last message index we judged
+        self.last_response_time = 0  # Timestamp of last AI response completion
         
         # Wait state for W (wait and see) responses
         self.pending_wait: Optional[PendingResponse] = None
@@ -164,10 +165,16 @@ class ConversationController:
                     # Check if there are new messages (reset timer or override)
                     if self.message_counter > self.last_judged_index:
                         # New message arrived while waiting
-                        history_text, current_speaker, current_message = \
+                        history_text, current_speaker, current_message, current_timestamp = \
                             self.history.get_history_and_current()
                         
                         if current_speaker and current_message:
+                            # Staleness Check
+                            if time.time() - current_timestamp > config.MESSAGE_STALENESS_THRESHOLD:
+                                logger.warning(f"Skipping stale message #{self.message_counter} (age: {time.time() - current_timestamp:.1f}s)")
+                                self.last_judged_index = self.message_counter
+                                continue
+
                             current_index = self.message_counter
                             self.last_judged_index = current_index
                             
@@ -223,13 +230,19 @@ class ConversationController:
                     continue
                 
                 # Get the latest history state
-                history_text, current_speaker, current_message = \
+                history_text, current_speaker, current_message, current_timestamp = \
                     self.history.get_history_and_current()
                 
                 if not current_speaker or not current_message:
                     await asyncio.sleep(0.1)
                     continue
                 
+                # Staleness Check
+                if time.time() - current_timestamp > config.MESSAGE_STALENESS_THRESHOLD:
+                    logger.warning(f"Skipping stale message #{self.message_counter} (age: {time.time() - current_timestamp:.1f}s)")
+                    self.last_judged_index = self.message_counter
+                    continue
+
                 # Mark as judged before calling LLM
                 current_index = self.message_counter
                 self.last_judged_index = current_index
@@ -257,6 +270,13 @@ class ConversationController:
                 )
                 
                 if decision == "Y":
+                    # Rate Limiting
+                    time_since_last = time.time() - self.last_response_time
+                    if time_since_last < config.MIN_RESPONSE_INTERVAL:
+                        wait_time = config.MIN_RESPONSE_INTERVAL - time_since_last
+                        logger.info(f"Rate limit: delaying response by {wait_time:.2f}s")
+                        await asyncio.sleep(wait_time)
+
                     # Respond immediately
                     await self.response_queue.put(pending)
                 elif decision == "W":
@@ -301,6 +321,7 @@ class ConversationController:
                     if full_response:
                         # Add AI response to history
                         self.history.add_ai_response(full_response)
+                        self.last_response_time = time.time()  # Update last response time
                         logger.debug(f"Response: Completed #{pending.message_index}")
                     
                 finally:

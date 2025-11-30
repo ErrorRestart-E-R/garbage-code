@@ -55,46 +55,61 @@ async def judge_conversation(conversation_history: str,
         
         logger.debug(f"Judge context: participants={participant_count}")
 
-        response = await client.chat(
-            model=config.LLM_MODEL_NAME,
-            messages=[
-                {"role": "system", "content": system_content},
-                {"role": "user", "content": user_content}
-            ],
-            think=False,  
-            options={
-                "temperature": config.LLM_JUDGE_TEMPERATURE,
-                "num_predict": config.LLM_JUDGE_MAX_TOKENS
-            }
-        )
-        
-        # Parse response
-        if hasattr(response, 'message'):
-            result = response.message.content.strip()
-        else:
-            result = response['message']['content'].strip()
+        # Retry loop for robustness
+        for attempt in range(config.JUDGE_MAX_RETRIES):
+            try:
+                response = await client.chat(
+                    model=config.LLM_MODEL_NAME,
+                    messages=[
+                        {"role": "system", "content": system_content},
+                        {"role": "user", "content": user_content}
+                    ],
+                    think=False,  
+                    options={
+                        "temperature": config.LLM_JUDGE_TEMPERATURE,
+                        "num_predict": config.LLM_JUDGE_MAX_TOKENS
+                    }
+                )
+                
+                # Parse response
+                if hasattr(response, 'message'):
+                    result = response.message.content.strip()
+                else:
+                    result = response['message']['content'].strip()
+                    
+                clean_result = result.strip().upper()
+                
+                # Determine decision: Y, W, or N
+                if "Y" in clean_result:
+                    decision = "Y"
+                    reason = "Judge: respond immediately"
+                    logger.debug(f"Judge raw: '{result}' -> decision: {decision}")
+                    return decision, reason
+                elif "W" in clean_result:
+                    decision = "W"
+                    reason = "Judge: wait and see"
+                    logger.debug(f"Judge raw: '{result}' -> decision: {decision}")
+                    return decision, reason
+                elif "N" in clean_result:
+                    decision = "N"
+                    reason = "Judge: do not respond"
+                    logger.debug(f"Judge raw: '{result}' -> decision: {decision}")
+                    return decision, reason
+                else:
+                    logger.warning(f"Judge invalid response (attempt {attempt+1}): {result}")
+                    # Retry if invalid
             
-        clean_result = result.strip().upper()
+            except Exception as e:
+                logger.warning(f"Judge attempt {attempt+1} failed: {e}")
         
-        # Determine decision: Y, W, or N
-        if "Y" in clean_result:
-            decision = "Y"
-            reason = "Judge: respond immediately"
-        elif "W" in clean_result:
-            decision = "W"
-            reason = "Judge: wait and see"
-        else:
-            decision = "N"
-            reason = "Judge: do not respond"
-        
-        logger.debug(f"Judge raw: '{result}' -> decision: {decision}")
-        
-        return decision, reason
+        # Fallback after all retries
+        logger.error("Judge failed all retries, defaulting to N")
+        return "N", "Judge failed all retries"
         
     except Exception as e:
-        logger.error(f"Judge error: {e}")
+        logger.error(f"Judge critical error: {e}")
         # Default to not responding on error
-        return "N", f"Judge error: {e}"
+        return "N", f"Judge critical error: {e}"
 
 
 async def get_response_stream(user_name: str,
