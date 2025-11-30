@@ -226,12 +226,14 @@ When deciding, consider how many humans (excluding {ai_name}) are present:
   - Default to Y: the human is usually talking to {ai_name}.
   - Use N only when the message clearly does not expect any reply.
 
-- 2–3 humans (small group)
+- 2 humans (two humans plus {ai_name})
+  - Similar to a small group, but still relatively focused.
   - Use Y when {ai_name} is clearly addressed or directly involved in the current exchange.
-  - Use W for open or group-directed prompts where any participant could answer.
-  - Use N when humans are clearly talking to each other and {ai_name} is not involved.
+  - Use W for open or group-directed prompts where either human could reasonably answer.
+  - Use N when the two humans are clearly talking to each other and not involving {ai_name}.
 
-- 4 or more humans (large group)
+- 3 or more humans (group situation)
+  - Treat this as a group chat.
   - Be conservative.
   - Use Y only when there is a clear and explicit invitation or handover to {ai_name}.
   - Use W for broad, group-wide prompts that {ai_name} could join, but where humans should have priority.
@@ -293,5 +295,5 @@ Answer:"""
 RESPONSE_CONTEXT_TEMPLATE = """[CONVERSATION HISTORY - for context only, do NOT respond directly to these lines]
 {conversation_history}
 
-[CURRENT MESSAGE - respond ONLY to this line]
+[CURRENT MESSAGE - respond to this line, using the history above as context]
 {current_speaker}: {current_message}"""
