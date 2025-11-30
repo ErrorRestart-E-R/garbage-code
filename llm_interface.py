@@ -148,7 +148,11 @@ async def get_response_stream(user_name: str,
         )
         
         # User message contains history + current message + instruction
-        user_content = f"{context_content}\n\nRespond to the CURRENT MESSAGE above in Korean."
+        user_content = (
+            f"{context_content}\n\n"
+            "Use the CONVERSATION HISTORY only to interpret the CURRENT MESSAGE, "
+            "and then respond ONLY to the CURRENT MESSAGE in Korean."
+        )
         
         messages = [
             {"role": "system", "content": system_content},
