@@ -39,7 +39,6 @@ logger = setup_logger(__name__, config.LOG_FILE, config.LOG_LEVEL)
 logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.WARNING)
 logging.getLogger("discord.player").setLevel(logging.WARNING)
 
-
 @dataclass
 class PendingResponse:
     """Pending response data"""
@@ -47,7 +46,6 @@ class PendingResponse:
     message: str
     history_json: str
     message_index: int
-
 
 class ConversationController:
     """
@@ -432,11 +430,6 @@ class ConversationController:
             "message_counter": self.message_counter,
         }
 
-
-# ============================================================
-# Discord Bot Setup
-# ============================================================
-
 # Token
 TOKEN = config.DISCORD_TOKEN
 
@@ -554,11 +547,6 @@ async def clear(ctx):
         await ctx.send("Conversation history cleared.")
     else:
         await ctx.send("Controller not initialized.")
-
-
-# ============================================================
-# Main Entry Point
-# ============================================================
 
 if __name__ == "__main__":
     from all_api_testing import run_all_tests

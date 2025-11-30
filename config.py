@@ -74,7 +74,7 @@ LOG_FILE = None  # Set to "bot.log" to enable file logging
 
 # TTS Configuration
 TTS_SERVER_URL = "http://192.168.45.181:9880/tts"
-TTS_VOLUME = 0.25  # Output volume (0.0 ~ 2.0, 1.0 = 100%)
+TTS_VOLUME = 0.25 #0.25  # Output volume (0.0 ~ 2.0, 1.0 = 100%)
 TTS_REFERENCE_PROMPT = "どっちも彼女さ。毎回聞かれるたびに、適当に思いついた通り名を名乗ってたんだ…"
 TTS_REFERENCE_PROMPT_LANG = "ja"
 TTS_REFERENCE_FILE = "reference.wav"
