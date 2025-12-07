@@ -96,7 +96,8 @@ def run_stt_process(audio_queue, result_queue, command_queue):
             del user_last_activity[uid]
 
 def transcribe_and_send(model, user_id, audio_data, result_queue):
-    if len(audio_data) < 3200: # Ignore very short audio (< 0.1s)
+    """Enhanced transcription with accuracy optimizations for noisy Discord audio."""
+    if len(audio_data) < config.STT_MIN_AUDIO_LENGTH:  # Ignore very short audio
         return
 
     data_s16 = np.frombuffer(audio_data, dtype=np.int16)
@@ -104,18 +105,42 @@ def transcribe_and_send(model, user_id, audio_data, result_queue):
     
     # Check audio energy (RMS) - filter out noise/silence
     rms = np.sqrt(np.mean(data_f32 ** 2))
-    if rms < 0.01:  # Too quiet, likely noise or silence
+    if rms < config.STT_MIN_RMS_THRESHOLD:  # Too quiet, likely noise or silence
         logger.debug(f"Audio too quiet (RMS={rms:.4f}), skipping")
         return
     
     start_time = time.time()
     try:
+        # Enhanced transcription with all accuracy parameters
         segments, info = model.transcribe(
-            data_f32, 
-            language=config.STT_LANGUAGE, 
+            data_f32,
+            language=config.STT_LANGUAGE,
+            
+            # Accuracy parameters
             beam_size=config.STT_BEAM_SIZE,
-            vad_filter=True,  # Enable Whisper's built-in VAD
-            vad_parameters=dict(min_silence_duration_ms=500)
+            best_of=config.STT_BEST_OF,
+            patience=config.STT_PATIENCE,
+            
+            # Temperature fallback for difficult audio
+            temperature=config.STT_TEMPERATURE,
+            
+            # Quality thresholds
+            compression_ratio_threshold=config.STT_COMPRESSION_RATIO_THRESHOLD,
+            log_prob_threshold=config.STT_LOG_PROB_THRESHOLD,
+            no_speech_threshold=config.STT_NO_SPEECH_THRESHOLD,
+            
+            # VAD filtering
+            vad_filter=config.STT_VAD_FILTER,
+            vad_parameters={
+                "threshold": config.STT_VAD_THRESHOLD,
+                "min_speech_duration_ms": config.STT_VAD_MIN_SPEECH_MS,
+                "min_silence_duration_ms": config.STT_VAD_MIN_SILENCE_MS,
+                "speech_pad_ms": config.STT_VAD_SPEECH_PAD_MS,
+            },
+            
+            # Additional options
+            condition_on_previous_text=True,  # Use context from previous segments
+            initial_prompt=None,  # Can add domain-specific prompt here
         )
         
         text = ""
@@ -124,7 +149,7 @@ def transcribe_and_send(model, user_id, audio_data, result_queue):
         
         for segment in segments:
             # Check no_speech_probability - high value means likely hallucination
-            if segment.no_speech_prob > 0.7:
+            if segment.no_speech_prob > config.STT_NO_SPEECH_THRESHOLD + 0.2:
                 logger.debug(f"Skipping segment with high no_speech_prob: {segment.no_speech_prob:.2f}")
                 continue
             text += segment.text
@@ -149,8 +174,9 @@ def transcribe_and_send(model, user_id, audio_data, result_queue):
                     logger.debug(f"Filtered hallucination: '{text}'")
                     return
             
+            avg_no_speech = no_speech_prob_sum / max(segment_count, 1)
             logger.debug(f"Transcription successful for user {user_id}")
-            logger.debug(f"Transcription: {text} (avg no_speech_prob: {no_speech_prob_sum/max(segment_count,1):.2f})")
+            logger.debug(f"Transcription: {text} (avg no_speech_prob: {avg_no_speech:.2f}, latency: {duration:.2f}s)")
             result_queue.put({
                 "user_id": user_id,
                 "text": text,
@@ -158,3 +184,4 @@ def transcribe_and_send(model, user_id, audio_data, result_queue):
             })
     except Exception as e:
         print(f"Transcription error: {e}")
+

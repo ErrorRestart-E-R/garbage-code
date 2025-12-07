@@ -4,7 +4,7 @@ python-dotenv
 faster-whisper
 requests
 aiohttp
-ollama
+openai
 numpy
 chromadb
 mem0ai

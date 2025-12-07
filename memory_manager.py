@@ -8,10 +8,10 @@ logger = setup_logger(__name__, config.LOG_FILE, config.LOG_LEVEL)
 class MemoryManager:
     def __init__(self):
         """
-        Initialize mem0 Memory with Ollama + ChromaDB configuration.
+        Initialize mem0 Memory with llama.cpp + ChromaDB configuration.
         """
         self.memory = Memory.from_config(config.MEM0_CONFIG)
-        logger.info("Mem0 Memory initialized with Ollama + ChromaDB")
+        logger.info("Mem0 Memory initialized with llama.cpp + ChromaDB")
 
     def save_memory(self, user_name: str, text: str):
         """

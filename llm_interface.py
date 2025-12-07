@@ -5,11 +5,13 @@ Handles both Judge and Response generation with a single LLM.
 - Judge: Decides whether to join the conversation (Y/N)
 - Response: Generates response (streaming)
 
+Using llama.cpp server with OpenAI-compatible API.
+
 IMPORTANT: Separates conversation history from current message
 to prevent LLM from responding to past messages.
 """
 
-import ollama
+from openai import AsyncOpenAI
 import config
 import json
 import mcp_library
@@ -39,7 +41,10 @@ async def judge_conversation(conversation_history: str,
         - reason: Judgment reason (for debugging)
     """
     try:
-        client = ollama.AsyncClient(host=config.OLLAMA_HOST)
+        client = AsyncOpenAI(
+            base_url=config.LLAMA_CPP_BASE_URL,
+            api_key=config.LLAMA_CPP_API_KEY
+        )
         
         # Build system prompt (fixed rules)
         system_content = config.JUDGE_SYSTEM_PROMPT.format(ai_name=config.AI_NAME)
@@ -58,26 +63,22 @@ async def judge_conversation(conversation_history: str,
         # Retry loop for robustness
         for attempt in range(config.JUDGE_MAX_RETRIES):
             try:
-                response = await client.chat(
+                response = await client.chat.completions.create(
                     model=config.LLM_MODEL_NAME,
                     messages=[
                         {"role": "system", "content": system_content},
                         {"role": "user", "content": user_content}
                     ],
-                    options={
-                        "temperature": config.LLM_JUDGE_TEMPERATURE,
-                        "top_p": config.LLM_JUDGE_TOP_P,
+                    temperature=config.LLM_JUDGE_TEMPERATURE,
+                    top_p=config.LLM_JUDGE_TOP_P,
+                    max_tokens=config.LLM_JUDGE_NUM_PREDICT,
+                    extra_body={
                         "top_k": config.LLM_JUDGE_TOP_K,
-                        "num_predict": config.LLM_JUDGE_NUM_PREDICT,
-                        "think": False
                     }
                 )
                 
-                # Parse response
-                if hasattr(response, 'message'):
-                    result = response.message.content.strip()
-                else:
-                    result = response['message']['content'].strip()
+                # Parse response (OpenAI format)
+                result = response.choices[0].message.content.strip()
                     
                 clean_result = result.strip().upper()
                 
@@ -132,7 +133,10 @@ async def get_response_stream(user_name: str,
         Response text chunks
     """
     try:
-        client = ollama.AsyncClient(host=config.OLLAMA_HOST)
+        client = AsyncOpenAI(
+            base_url=config.LLAMA_CPP_BASE_URL,
+            api_key=config.LLAMA_CPP_API_KEY
+        )
         tools = mcp_library.get_tools() if config.ENABLE_MCP_TOOLS else None
         
         # Build system prompt (fixed personality/rules only)
@@ -152,8 +156,6 @@ async def get_response_stream(user_name: str,
         # User message contains history + current message + instruction
         user_content = (
             f"{context_content}\n\n"
-            "Use the CONVERSATION HISTORY only to interpret the CURRENT MESSAGE, "
-            "and then respond ONLY to the CURRENT MESSAGE in Korean."
         )
         
         messages = [
@@ -161,47 +163,62 @@ async def get_response_stream(user_name: str,
             {"role": "user", "content": user_content}
         ]
         
-        # Streaming request
+        # Streaming request (OpenAI format with llama.cpp extra_body)
         chat_kwargs = {
             "model": config.LLM_MODEL_NAME,
             "messages": messages,
             "stream": True,
-            "options": {
-                "temperature": config.LLM_RESPONSE_TEMPERATURE,
-                "top_p": config.LLM_RESPONSE_TOP_P,
+            "temperature": config.LLM_RESPONSE_TEMPERATURE,
+            "top_p": config.LLM_RESPONSE_TOP_P,
+            "extra_body": {
                 "top_k": config.LLM_RESPONSE_TOP_K,
                 "repeat_penalty": config.LLM_RESPONSE_REPEAT_PENALTY,
-                "think": False
             }
         }
         if tools:
             chat_kwargs["tools"] = tools
         
-        tool_calls = []
+        tool_calls_accumulated = []
         content_buffer = ""
         has_yielded = False
         
-        async for part in await client.chat(**chat_kwargs):
-            # Extract content
-            if hasattr(part, 'message'):
-                content = part.message.content or ""
-                # Check for tool calls
-                if hasattr(part.message, 'tool_calls') and part.message.tool_calls:
-                    tool_calls = part.message.tool_calls
-            else:
-                content = part.get('message', {}).get('content', '')
-                if 'tool_calls' in part.get('message', {}):
-                    tool_calls = part['message']['tool_calls']
-            
-            if content:
-                content_buffer += content
-                has_yielded = True
-                yield content
+        stream = await client.chat.completions.create(**chat_kwargs)
+        async for chunk in stream:
+            # Extract content from streaming chunk
+            delta = chunk.choices[0].delta if chunk.choices else None
+            if delta:
+                content = delta.content or ""
+                
+                # Check for tool calls (accumulated across chunks)
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        # Accumulate tool call information
+                        if tc.index >= len(tool_calls_accumulated):
+                            tool_calls_accumulated.append({
+                                "id": tc.id or "",
+                                "function": {"name": "", "arguments": ""}
+                            })
+                        if tc.function:
+                            if tc.function.name:
+                                tool_calls_accumulated[tc.index]["function"]["name"] = tc.function.name
+                            if tc.function.arguments:
+                                tool_calls_accumulated[tc.index]["function"]["arguments"] += tc.function.arguments
+                
+                if content:
+                    content_buffer += content
+                    has_yielded = True
+                    yield content
         
         # Process tool calls (only if no content was yielded)
-        if tool_calls and not has_yielded:
-            for tool_call in tool_calls:
-                func_name, func_args = _get_tool_call_info(tool_call)
+        if tool_calls_accumulated and not has_yielded:
+            for tool_call in tool_calls_accumulated:
+                func_name = tool_call["function"]["name"]
+                func_args_str = tool_call["function"]["arguments"]
+                
+                try:
+                    func_args = json.loads(func_args_str) if func_args_str else {}
+                except json.JSONDecodeError:
+                    func_args = {}
                 
                 if func_name:
                     logger.debug(f"Tool call: {func_name}({func_args})")
@@ -211,55 +228,36 @@ async def get_response_stream(user_name: str,
                     messages.append({
                         "role": "assistant",
                         "content": content_buffer,
-                        "tool_calls": [tool_call]
+                        "tool_calls": [{
+                            "id": tool_call["id"],
+                            "type": "function",
+                            "function": tool_call["function"]
+                        }]
                     })
                     messages.append({
                         "role": "tool",
+                        "tool_call_id": tool_call["id"],
                         "content": tool_result
                     })
+            
             # Generate final response with tool results
-            async for part in await client.chat(
+            stream = await client.chat.completions.create(
                 model=config.LLM_MODEL_NAME,
                 messages=messages,
                 stream=True,
-                options={
-                    "temperature": config.LLM_RESPONSE_TEMPERATURE,
-                    "top_p": config.LLM_RESPONSE_TOP_P,
+                temperature=config.LLM_RESPONSE_TEMPERATURE,
+                top_p=config.LLM_RESPONSE_TOP_P,
+                extra_body={
                     "top_k": config.LLM_RESPONSE_TOP_K,
                     "repeat_penalty": config.LLM_RESPONSE_REPEAT_PENALTY,
-                    "think": False
                 }
-            ):
-                if hasattr(part, 'message'):
-                    content = part.message.content
-                else:
-                    content = part.get('message', {}).get('content')
-                
-                if content:
-                    yield content
+            )
+            async for chunk in stream:
+                delta = chunk.choices[0].delta if chunk.choices else None
+                if delta and delta.content:
+                    yield delta.content
                     
     except Exception as e:
         logger.error(f"Response stream error: {e}")
         yield None
 
-
-def _get_tool_call_info(tool_call) -> Tuple[str, dict]:
-    """
-    Extract function name and arguments from tool call
-    """
-    if hasattr(tool_call, 'function'):
-        func = tool_call.function
-        name = func.name if hasattr(func, 'name') else func.get('name', '')
-        args = func.arguments if hasattr(func, 'arguments') else func.get('arguments', {})
-    else:
-        func = tool_call.get('function', {})
-        name = func.get('name', '')
-        args = func.get('arguments', {})
-    
-    if isinstance(args, str):
-        try:
-            args = json.loads(args)
-        except json.JSONDecodeError:
-            args = {}
-    
-    return name, args

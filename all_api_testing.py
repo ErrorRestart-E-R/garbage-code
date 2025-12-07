@@ -69,7 +69,7 @@ def test_required_packages() -> bool:
     print_test_header("Required Python Packages")
     
     required_packages = {
-        'ollama': 'ollama',
+        'openai': 'openai',
         'discord': 'discord.py',
         'faster_whisper': 'faster-whisper',
         'requests': 'requests',
@@ -95,71 +95,59 @@ def test_required_packages() -> bool:
         return False
 
 
-def test_ollama_connection_and_model() -> bool:
+def test_llama_cpp_connection_and_model() -> bool:
     """
-    Tests Ollama connection and checks if the model is available.
+    Tests llama.cpp server connection and checks if the model is available.
     Returns True if test passes, False otherwise.
     """
-    print_test_header("Ollama Connection & Model Check")
+    print_test_header("llama.cpp Connection & Model Check")
     
     try:
-        import ollama
+        from openai import OpenAI
         import config
         
-        print_info(f"Connecting to Ollama at {config.OLLAMA_HOST}...")
+        print_info(f"Connecting to llama.cpp at {config.LLAMA_CPP_BASE_URL}...")
         
-        client = ollama.Client(host=config.OLLAMA_HOST)
+        client = OpenAI(
+            base_url=config.LLAMA_CPP_BASE_URL,
+            api_key=config.LLAMA_CPP_API_KEY
+        )
         
-    # Check if Ollama is running by listing models
+        # Check if server is running by listing models
         try:
-            models_response = client.list()
-            # Handle both object and dict response types for compatibility
-            if hasattr(models_response, 'models'):
-                models = models_response.models
-            else:
-                models = models_response.get('models', [])
-            print_success("Connected to Ollama successfully")
+            models_response = client.models.list()
+            models = list(models_response)
+            print_success("Connected to llama.cpp server successfully")
         except Exception as e:
-            print_error(f"Cannot connect to Ollama: {e}")
-            print_info("Make sure Ollama is running (default port 11434)")
+            print_error(f"Cannot connect to llama.cpp server: {e}")
+            print_info("Make sure llama.cpp server is running")
             return False
             
         # Get model name from config
-        model_name = getattr(config, 'LLM_MODEL_NAME', 'gemma2:9b')
+        model_name = getattr(config, 'LLM_MODEL_NAME', 'model')
         print_info(f"Checking for model: {model_name}")
         
-        # Check if model is available
-        model_found = False
-        for model in models:
-            # Handle both object and dict model types
-            name = model.model if hasattr(model, 'model') else model.get('name')
-            if name == model_name or name.startswith(model_name + ":"):
-                model_found = True
-                print_success(f"Model '{name}' found")
-                break
-        
-        if not model_found:
-            print_error(f"Model '{model_name}' not found in Ollama")
-            print_info(f"Please run: ollama pull {model_name}")
-            print_info("Available models:")
+        # Check if model is available (llama.cpp usually has one model)
+        if models:
+            print_success(f"Model(s) available on server")
             for m in models:
-                name = m.model if hasattr(m, 'model') else m.get('name')
-                print_info(f" - {name}")
-            return False
+                print_info(f" - {m.id}")
+        else:
+            print_info("No models listed, but server is responding")
         
         # Test model with a simple prompt
         print_info("Testing model response...")
         try:
-            response = client.chat(model=model_name, messages=[{'role': 'user', 'content': 'Hello'}])
-            # Handle both object and dict response types
-            if hasattr(response, 'message'):
-                content = response.message.content
-            else:
-                content = response['message']['content']
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[{'role': 'user', 'content': 'Hello'}],
+                max_tokens=50
+            )
+            content = response.choices[0].message.content
                 
             if content:
                 print_success(f"Model response received: {content[:50]}...")
-                print_success("Ollama connection and model test passed")
+                print_success("llama.cpp connection and model test passed")
                 return True
             else:
                 print_error("Model did not generate a valid response")
@@ -169,7 +157,7 @@ def test_ollama_connection_and_model() -> bool:
             return False
             
     except Exception as e:
-        print_error(f"Ollama test failed: {e}")
+        print_error(f"llama.cpp test failed: {e}")
         return False
 
 
@@ -317,7 +305,7 @@ def run_all_tests() -> bool:
     tests = [
         ("Environment Variables", test_environment_variables),
         ("Required Packages", test_required_packages),
-        ("Ollama Connection & Model Check", test_ollama_connection_and_model),
+        ("llama.cpp Connection & Model Check", test_llama_cpp_connection_and_model),
         ("TTS Server", test_tts_server),
         ("STT/VAD Models", test_stt_models),
         ("Reference Files", test_reference_files),
