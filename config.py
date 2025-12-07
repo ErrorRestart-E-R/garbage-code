@@ -42,7 +42,7 @@ AI_NAME = "LLM"  # AI의 이름 (프롬프트에서 사용됨)
 # 메인 LLM 서버 (응답 생성용)
 LLAMA_CPP_BASE_URL = "http://192.168.45.28:5000/v1"
 LLAMA_CPP_API_KEY = "not-needed"  # llama.cpp는 API 키 불필요
-LLM_MODEL_NAME = "google/gemma-3-12b-it-qat-q4_0-gguf"
+LLM_MODEL_NAME = "gemma-3-12b-it-qat-q4_0-gguf"
 
 # 임베딩 서버 (메모리 시스템용)
 LLAMA_CPP_EMBEDDING_BASE_URL = "http://192.168.45.181:5000/v1"
@@ -86,6 +86,8 @@ ENABLE_MCP_TOOLS = False  # MCP 도구 호출 활성화/비활성화
 # ============================================================================
 # 8. 메모리 시스템 (Mem0 + ChromaDB)
 # ============================================================================
+ENABLE_MEMORY = False  # mem0 메모리 시스템 활성화/비활성화
+
 MEMORY_DB_PATH = "./memory_db"
 
 MEM0_CONFIG = {
@@ -102,7 +104,7 @@ MEM0_CONFIG = {
             "model": LLM_MODEL_NAME,
             "temperature": 0,
             "max_tokens": 2000,
-            "base_url": LLAMA_CPP_BASE_URL,
+            "openai_base_url": LLAMA_CPP_BASE_URL,
             "api_key": LLAMA_CPP_API_KEY,
         },
     },
@@ -110,7 +112,7 @@ MEM0_CONFIG = {
         "provider": "openai",
         "config": {
             "model": MEMORY_EMBEDDING_MODEL,
-            "base_url": LLAMA_CPP_EMBEDDING_BASE_URL,
+            "openai_base_url": LLAMA_CPP_EMBEDDING_BASE_URL,
             "api_key": LLAMA_CPP_API_KEY,
         },
     },

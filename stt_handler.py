@@ -127,9 +127,6 @@ def transcribe_and_send(model, user_id, audio_data, result_queue):
             best_of=config.STT_BEST_OF,
             patience=config.STT_PATIENCE,
             
-            # Batch processing (RealtimeSTT default: 16)
-            batch_size=config.STT_BATCH_SIZE,
-            
             # Suppress specific tokens
             suppress_tokens=config.STT_SUPPRESS_TOKENS,
             

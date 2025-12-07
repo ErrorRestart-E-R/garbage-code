@@ -10,6 +10,13 @@ class MemoryManager:
         """
         Initialize mem0 Memory with llama.cpp + ChromaDB configuration.
         """
+        self.enabled = getattr(config, 'ENABLE_MEMORY', True)
+        
+        if not self.enabled:
+            self.memory = None
+            logger.info("Mem0 Memory is DISABLED")
+            return
+            
         self.memory = Memory.from_config(config.MEM0_CONFIG)
         logger.info("Mem0 Memory initialized with llama.cpp + ChromaDB")
 
@@ -18,6 +25,9 @@ class MemoryManager:
         Saves a text snippet to mem0 memory.
         mem0 automatically extracts and stores relevant facts.
         """
+        if not self.enabled:
+            return None
+            
         try:
             result = self.memory.add(
                 text,
@@ -35,6 +45,9 @@ class MemoryManager:
         """
         Searches for relevant memories using mem0.
         """
+        if not self.enabled:
+            return []
+            
         try:
             results = self.memory.search(
                 query_text,
@@ -74,6 +87,9 @@ class MemoryManager:
         """
         Retrieves all memories for a specific user.
         """
+        if not self.enabled:
+            return []
+            
         try:
             result = self.memory.get_all(user_id=user_name)
             return result.get("results", []) if result else []
