@@ -109,6 +109,12 @@ def transcribe_and_send(model, user_id, audio_data, result_queue):
         logger.debug(f"Audio too quiet (RMS={rms:.4f}), skipping")
         return
     
+    # Normalize audio to -0.95 dBFS (RealtimeSTT style)
+    if config.STT_NORMALIZE_AUDIO:
+        peak = np.max(np.abs(data_f32))
+        if peak > 0:
+            data_f32 = (data_f32 / peak) * 0.95
+    
     start_time = time.time()
     try:
         # Enhanced transcription with all accuracy parameters
@@ -120,6 +126,12 @@ def transcribe_and_send(model, user_id, audio_data, result_queue):
             beam_size=config.STT_BEAM_SIZE,
             best_of=config.STT_BEST_OF,
             patience=config.STT_PATIENCE,
+            
+            # Batch processing (RealtimeSTT default: 16)
+            batch_size=config.STT_BATCH_SIZE,
+            
+            # Suppress specific tokens
+            suppress_tokens=config.STT_SUPPRESS_TOKENS,
             
             # Temperature fallback for difficult audio
             temperature=config.STT_TEMPERATURE,

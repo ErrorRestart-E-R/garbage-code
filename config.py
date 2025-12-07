@@ -123,7 +123,7 @@ MEM0_CONFIG = {
 STT_MODEL_ID = "deepdml/faster-whisper-large-v3-turbo-ct2"
 STT_DEVICE = "cuda"           # 옵션: "cuda", "cpu"
 STT_COMPUTE_TYPE = "float16"  # 옵션: "float16", "int8", "float32", "int8_float16"
-STT_LANGUAGE = "ko"           # Whisper 지원 언어 코드
+STT_LANGUAGE = "ko"         # Whisper 지원 언어 코드
 
 # 정확도 파라미터
 # beam_size: 1~∞ (기본값=5, 권장=1~10, 높을수록 정확하지만 느림)
@@ -132,6 +132,12 @@ STT_BEAM_SIZE = 5
 STT_BEST_OF = 5
 # patience: 0.0~∞ (기본값=1.0, 빔 서치 조기 종료 factor)
 STT_PATIENCE = 1.0
+# batch_size: 0~∞ (기본값=16, 배치 처리로 속도 향상, 0=비활성화)
+STT_BATCH_SIZE = 16
+# suppress_tokens: 억제할 토큰 ID 리스트 (기본값=[-1])
+STT_SUPPRESS_TOKENS = [-1]
+# normalize_audio: 오디오 정규화 (기본값=False, True=정확도 향상)
+STT_NORMALIZE_AUDIO = False
 
 # Temperature Fallback (어려운 오디오 재시도)
 # temperature: 0.0~1.0 (0.0=결정적, 1.0=랜덤, 리스트로 순차 시도)
