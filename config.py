@@ -103,7 +103,7 @@ MEM0_CONFIG = {
         "config": {
             "model": LLM_MODEL_NAME,
             "temperature": 0,
-            "max_tokens": 2000,
+            "max_tokens": 512,
             "openai_base_url": LLAMA_CPP_BASE_URL,
             "api_key": LLAMA_CPP_API_KEY,
         },
