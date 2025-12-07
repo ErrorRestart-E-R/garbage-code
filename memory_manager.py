@@ -44,6 +44,7 @@ class MemoryManager:
     def search_memory(self, query_text: str, user_name: str = None, limit: int = 3):
         """
         Searches for relevant memories using mem0.
+        Uses vector search only (rerank=False) for faster response.
         """
         if not self.enabled:
             return []
@@ -52,7 +53,8 @@ class MemoryManager:
             results = self.memory.search(
                 query_text,
                 user_id=user_name,
-                limit=limit
+                limit=limit,
+                rerank=False  # LLM reranking 비활성화 - 속도 개선
             )
             
             memories = []

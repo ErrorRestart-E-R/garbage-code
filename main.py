@@ -126,10 +126,8 @@ class ConversationController:
                         self.history.add(user_name, user_text)
                         self.message_counter += 1
                         
-                        # Background memory save (fire and forget)
-                        asyncio.create_task(
-                            self._save_memory_background(user_name, user_text)
-                        )
+                        # Note: Memory save moved to response_worker (after LLM response)
+                        # to avoid LLM contention
                         
                         logger.debug(f"History: Added message #{self.message_counter} from {user_name}")
                 
@@ -323,6 +321,11 @@ class ConversationController:
                         self.history.add_ai_response(full_response)
                         self.last_response_time = time.time()  # Update last response time
                         logger.debug(f"Response: Completed #{pending.message_index}")
+                        
+                        # Save user message to long-term memory (after LLM response to avoid contention)
+                        asyncio.create_task(
+                            self._save_memory_background(pending.speaker, pending.message)
+                        )
                     
                 finally:
                     # Mark as not responding - judge_worker will poll for new messages
