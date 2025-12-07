@@ -45,8 +45,8 @@ LLAMA_CPP_API_KEY = "not-needed"  # llama.cpp는 API 키 불필요
 LLM_MODEL_NAME = "gemma-3-12b-it-qat-q4_0-gguf"
 
 # 임베딩 서버 (메모리 시스템용)
-LLAMA_CPP_EMBEDDING_BASE_URL = "http://192.168.45.181:5000/v1"
-MEMORY_EMBEDDING_MODEL = "qwen3-embedding:0.6b"
+#LLAMA_CPP_EMBEDDING_BASE_URL = "http://192.168.45.181:5000/v1"
+MEMORY_EMBEDDING_MODEL = "qwen3-embedding:4b"
 
 # ============================================================================
 # 5. LLM 응답 생성 파라미터
@@ -59,10 +59,10 @@ LLM_RESPONSE_REPEAT_PENALTY = 1.05  # 반복 페널티 (1.0=없음)
 # ============================================================================
 # 6. LLM 판단(Judge) 파라미터
 # ============================================================================
-LLM_JUDGE_TEMPERATURE = 0.2   # 낮을수록 일관된 판단
+LLM_JUDGE_TEMPERATURE = 0.5   # 낮을수록 일관된 판단
 LLM_JUDGE_TOP_P = 0.7
 LLM_JUDGE_TOP_K = 20
-LLM_JUDGE_NUM_PREDICT = 3     # 출력 토큰 수 (Y/W/N만 필요)
+LLM_JUDGE_NUM_PREDICT = 5     # 출력 토큰 수 (Y/W/N만 필요)
 JUDGE_MAX_RETRIES = 2         # 판단 실패 시 재시도 횟수
 
 # ============================================================================
@@ -86,7 +86,7 @@ ENABLE_MCP_TOOLS = False  # MCP 도구 호출 활성화/비활성화
 # ============================================================================
 # 8. 메모리 시스템 (Mem0 + ChromaDB)
 # ============================================================================
-ENABLE_MEMORY = False  # mem0 메모리 시스템 활성화/비활성화
+ENABLE_MEMORY = True  # mem0 메모리 시스템 활성화/비활성화
 
 MEMORY_DB_PATH = "./memory_db"
 
@@ -109,11 +109,9 @@ MEM0_CONFIG = {
         },
     },
     "embedder": {
-        "provider": "openai",
+        "provider": "ollama",
         "config": {
             "model": MEMORY_EMBEDDING_MODEL,
-            "openai_base_url": LLAMA_CPP_EMBEDDING_BASE_URL,
-            "api_key": LLAMA_CPP_API_KEY,
         },
     },
 }
