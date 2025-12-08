@@ -127,6 +127,9 @@ def transcribe_and_send(model, user_id, audio_data, result_queue):
             best_of=config.STT_BEST_OF,
             patience=config.STT_PATIENCE,
             
+            # Batch size for faster processing
+            #batch_size=config.STT_BATCH_SIZE,
+
             # Suppress specific tokens
             suppress_tokens=config.STT_SUPPRESS_TOKENS,
             
@@ -170,19 +173,7 @@ def transcribe_and_send(model, user_id, audio_data, result_queue):
         
         text = text.strip()
         
-        # Filter known hallucination patterns (repeated phrases)
-        hallucination_patterns = [
-            "감사합니다", "시청해 주셔서 감사합니다", "구독과 좋아요",
-            "Thank you", "Thanks for watching", "Subscribe"
-        ]
-        
         if text:
-            # Check if text is just a repeated hallucination
-            for pattern in hallucination_patterns:
-                if text == pattern or text.count(pattern) > 1:
-                    logger.debug(f"Filtered hallucination: '{text}'")
-                    return
-            
             avg_no_speech = no_speech_prob_sum / max(segment_count, 1)
             logger.debug(f"Transcription successful for user {user_id}")
             logger.debug(f"Transcription: {text} (avg no_speech_prob: {avg_no_speech:.2f}, latency: {duration:.2f}s)")
