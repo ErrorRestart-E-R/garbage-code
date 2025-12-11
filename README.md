@@ -61,10 +61,8 @@ graph TD
 git clone https://github.com/your-repo/discord-stt-bot.git
 cd discord-stt-bot
 pip install -r requirements.txt
-pip install lmstudio
 ```
 > *Note: The first `faster-whisper` run downloads optimized kernels, so the initial setup may take a few minutes.*
-> LM Studio Python SDK 설치 및 사용법은 [공식 문서](https://lmstudio.ai/docs/python)를 참고하세요.
 
 ### 2. Configuration
 Create a `.env` file in the root directory:
@@ -74,7 +72,7 @@ DISCORD_TOKEN=your_super_secret_token_here
 
 ### 3. Run
 ```bash
-python bot.py
+python main.py
 ```
 
 ---

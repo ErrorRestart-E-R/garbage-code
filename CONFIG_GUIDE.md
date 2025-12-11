@@ -4,6 +4,33 @@ config.py의 각 설정 옵션에 대한 상세 설명입니다.
 
 ---
 
+## VTube Studio (VTS) 설정
+
+### VTS_ENABLED
+- **기능**: VTube Studio 연동(립싱크/핫키)을 켜고 끄는 마스터 스위치
+- **값**: True/False
+- **설명**: True면 시작 시 VTS 클라이언트를 생성하고, TTS 재생 시 립싱크 파라미터 주입을 시도합니다.
+
+### VTS_WS_URL
+- **기능**: VTube Studio Public API WebSocket 주소
+- **기본**: `ws://localhost:8001`
+- **설명**: VTube Studio에서 `Settings > API > Enable API`가 켜져 있어야 합니다.
+
+### VTS_BACKEND
+- **기능**: VTS 클라이언트 구현 선택
+- **값**: `"pyvts"` 또는 `"ws"`
+- **설명**: 기본은 `"pyvts"`이며, 토큰 파일 기반 인증 및 요청 생성기가 포함됩니다.
+
+### VTS_AUTH_TOKEN_PATH
+- **기능**: VTS 인증 토큰을 저장/로드할 파일 경로
+- **기본**: `./vts_token.txt`
+- **설명**: 최초 1회 토큰 발급 시 파일에 자동 저장되며, 이후 실행부터 자동으로 이 파일을 읽어 인증합니다.
+
+### VTS_EMOTION_HOTKEY_MAP
+- **기능**: 감정 → 표정(핫키) 매핑 스캐폴딩
+- **형식**: `{ "happy": "HotkeyNameOrID", ... }`
+- **설명**: 지금은 틀만 제공되며, 실제 핫키 이름/ID는 추후 채워 넣으면 됩니다.
+
 ## LLM 설정
 
 ### LLM_RESPONSE_TEMPERATURE

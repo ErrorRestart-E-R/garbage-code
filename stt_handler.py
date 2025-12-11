@@ -5,7 +5,7 @@ from logger import setup_logger
 import os
 import config
 logger = setup_logger(__name__, config.LOG_FILE, config.LOG_LEVEL)
-def run_stt_process(audio_queue, result_queue, command_queue):
+def run_stt_process(audio_queue, result_queue, command_queue, status_queue=None):
     """
     Standalone process for Speech-to-Text.
     Handles lightweight audio buffering and transcription without VAD.
@@ -16,14 +16,37 @@ def run_stt_process(audio_queue, result_queue, command_queue):
     # --- Model Initialization ---
     # Models must be loaded within this process to avoid CUDA context issues with multiprocessing.
     print("Loading Faster-Whisper model...")
+
+    def _notify(msg):
+        if status_queue is None:
+            return
+        try:
+            status_queue.put(msg)
+        except Exception:
+            pass
+
+    model = None
+    device_used = "unknown"
     try:
         from faster_whisper import WhisperModel
-        model = WhisperModel(config.STT_MODEL_ID, device=config.STT_DEVICE, compute_type=config.STT_COMPUTE_TYPE)
-        print("Faster-Whisper loaded on GPU.")
+        model = WhisperModel(
+            config.STT_MODEL_ID,
+            device=config.STT_DEVICE,
+            compute_type=config.STT_COMPUTE_TYPE,
+        )
+        device_used = str(config.STT_DEVICE)
+        print(f"Faster-Whisper loaded ({device_used}).")
     except Exception as e:
-        print(f"Failed to load GPU model: {e}. Fallback to CPU base.")
-        from faster_whisper import WhisperModel
-        model = WhisperModel("base", device="cpu", compute_type="int8")
+        print(f"Failed to load STT model on {config.STT_DEVICE}: {e}. Fallback to CPU base.")
+        try:
+            from faster_whisper import WhisperModel
+            model = WhisperModel("base", device="cpu", compute_type="int8")
+            device_used = "cpu"
+            print("Faster-Whisper loaded (cpu fallback).")
+        except Exception as e2:
+            print(f"Failed to load STT model fallback: {e2}")
+            _notify({"type": "STT_ERROR", "error": str(e2)})
+            return
 
     # --- State Management ---
     user_buffers = {}       # Incoming raw audio stream
@@ -31,6 +54,7 @@ def run_stt_process(audio_queue, result_queue, command_queue):
     user_last_activity = {}  # Timestamp for cleanup
 
     print("STT Process Ready.")
+    _notify({"type": "STT_READY", "device": device_used})
 
     while True:
         # 1. Check Commands

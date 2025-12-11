@@ -151,6 +151,11 @@ STT_DEVICE = "cuda"           # 옵션: "cuda", "cpu"
 STT_COMPUTE_TYPE = "float16"  # 옵션: "float16", "int8", "float32", "int8_float16"
 STT_LANGUAGE = "ko"            # Whisper 지원 언어 코드
 
+# 시작 시 STT 모델 로딩이 끝날 때까지 대기(Discord 연결/봇 시작 전에 준비 완료 보장)
+STT_WAIT_READY_ON_STARTUP = True
+# STT 프로세스가 READY를 보내지 않으면 실패 처리할 타임아웃(초)
+STT_READY_TIMEOUT_SECONDS = 180.0
+
 # 정확도 파라미터
 # beam_size: 1~∞ (기본값=5, 권장=1~10, 높을수록 정확하지만 느림)
 STT_BEAM_SIZE = 5

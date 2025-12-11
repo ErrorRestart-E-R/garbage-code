@@ -10,6 +10,7 @@ import sys
 import importlib.util
 from pathlib import Path
 import asyncio
+from urllib.parse import urlparse
 
 
 def print_test_header(test_name):
@@ -21,17 +22,18 @@ def print_test_header(test_name):
 
 def print_success(message):
     """Print success message"""
-    print(f"✓ {message}")
+    # Windows(cp949) 콘솔에서도 안전하게 출력되도록 ASCII만 사용
+    print(f"[OK] {message}")
 
 
 def print_error(message):
     """Print error message"""
-    print(f"✗ {message}")
+    print(f"[FAIL] {message}")
 
 
 def print_info(message):
     """Print info message"""
-    print(f"  → {message}")
+    print(f"  - {message}")
 
 
 def test_environment_variables() -> bool:
@@ -71,21 +73,34 @@ def test_required_packages() -> bool:
     required_packages = {
         'openai': 'openai',
         'discord': 'discord.py',
+        'discord.ext.voice_recv': 'discord-ext-voice-recv',
         'faster_whisper': 'faster-whisper',
         'requests': 'requests',
         'aiohttp': 'aiohttp',
         'dotenv': 'python-dotenv',
+        'numpy': 'numpy',
+        'chromadb': 'chromadb',
+        'mem0': 'mem0ai',
+        'sentence_transformers': 'sentence-transformers',
+        'pyvts': 'pyvts',
     }
     
     all_installed = True
+    install_hint = "pip install -r requirements.txt"
     
     for module_name, package_name in required_packages.items():
-        if importlib.util.find_spec(module_name) is not None:
+        try:
+            spec = importlib.util.find_spec(module_name)
+        except ModuleNotFoundError:
+            spec = None
+
+        if spec is not None:
             print_success(f"{package_name} is installed")
-        else:
-            print_error(f"{package_name} is NOT installed")
-            print_info(f"Install with: pip install {package_name}")
-            all_installed = False
+            continue
+
+        print_error(f"{package_name} is NOT installed")
+        print_info(f"Install with: {install_hint}")
+        all_installed = False
     
     if all_installed:
         print_success("All required packages are installed")
@@ -278,11 +293,72 @@ def test_reference_files() -> bool:
         return True
 
 
+def _parse_ws_url(ws_url: str) -> tuple[str, int]:
+    """
+    ws://localhost:8001 형태를 (host, port)로 변환.
+    """
+    u = urlparse(ws_url)
+    host = u.hostname or "localhost"
+    port = int(u.port or 8001)
+    return host, port
+
+
+def test_vts_connection_optional() -> bool:
+    """
+    VTube Studio 연결 스모크 테스트.
+    - config.VTS_ENABLED=True일 때만 실행
+    - 토큰 발급/인증은 하지 않음(사용자 Allow 팝업 유발 방지)
+    """
+    print_test_header("VTube Studio (VTS) Connection (optional)")
+
+    try:
+        import config
+
+        if not getattr(config, "VTS_ENABLED", False):
+            print_info("VTS is disabled in config.py (VTS_ENABLED=False) - skipping")
+            return True
+
+        try:
+            import pyvts  # type: ignore
+        except ImportError:
+            print_error("pyvts is NOT installed")
+            print_info("Install with: pip install pyvts")
+            return False
+
+        host, port = _parse_ws_url(getattr(config, "VTS_WS_URL", "ws://localhost:8001"))
+        token_path = getattr(config, "VTS_AUTH_TOKEN_PATH", "./vts_token.txt")
+        plugin_name = getattr(config, "VTS_PLUGIN_NAME", "AiVutber")
+        plugin_dev = getattr(config, "VTS_PLUGIN_DEVELOPER", "ErrorRestart")
+
+        async def _run():
+            plugin_info = {
+                "plugin_name": plugin_name,
+                "developer": plugin_dev,
+                "authentication_token_path": token_path,
+            }
+            v = pyvts.vts(plugin_info=plugin_info, host=host, port=port)
+            await v.connect()
+            await v.close()
+
+        asyncio.run(_run())
+        print_success(f"Connected to VTS API at ws://{host}:{port}")
+        print_success("VTS connection test passed")
+        return True
+
+    except Exception as e:
+        print_error(f"VTS connection test failed: {e}")
+        print_info("Make sure VTube Studio is running and Settings > API > Enable API is ON")
+        print_info("Also ensure the API port matches VTS_WS_URL in config.py")
+        return False
+
+
 def run_all_tests() -> bool:
     """
     Runs all pre-flight tests.
     Returns True if all tests pass, False otherwise.
-    Also pre-loads required models for faster bot startup.
+    Note:
+    - 이 단계는 "사전 점검"이 목적이며, 무거운 모델(STT 등)을 실제로 로딩/다운로드하지 않습니다.
+    - STT(faster-whisper) 모델 로딩은 실제 실행 시 STT 프로세스(`stt_handler.run_stt_process`)에서 수행됩니다.
     """
     import os
     import platform
@@ -309,6 +385,7 @@ def run_all_tests() -> bool:
         ("TTS Server", test_tts_server),
         ("STT/VAD Models", test_stt_models),
         ("Reference Files", test_reference_files),
+        ("VTube Studio (optional)", test_vts_connection_optional),
     ]
     
     passed_tests = []
@@ -323,14 +400,14 @@ def run_all_tests() -> bool:
                 clear_terminal()
                 print()
                 for j, passed_name in enumerate(passed_tests, 1):
-                    print(f"[{j}/{len(tests)}] ✓ {passed_name} - PASSED")
+                    print(f"[{j}/{len(tests)}] [OK] {passed_name} - PASSED")
                 
                 if i < len(tests):
                     print("\nContinuing to next test...\n")
                     import time
                     time.sleep(0.5)  # Brief pause to show success
             else:
-                print(f"\n\n❌ Test failed: {test_name}")
+                print(f"\n\n[FAIL] Test failed: {test_name}")
                 print("="*60)
                 print("Pre-flight checks stopped due to failure.")
                 print("Please fix the error above before continuing.")
@@ -338,7 +415,7 @@ def run_all_tests() -> bool:
                 return False
                 
         except Exception as e:
-            print(f"\n\n❌ Test '{test_name}' crashed: {e}")
+            print(f"\n\n[FAIL] Test '{test_name}' crashed: {e}")
             print("="*60)
             print("Pre-flight checks stopped due to crash.")
             print("="*60 + "\n")
@@ -347,11 +424,11 @@ def run_all_tests() -> bool:
     # All tests passed - clear and show final summary
     clear_terminal()
     print("\n" + "="*60)
-    print("✓ ALL PRE-FLIGHT CHECKS PASSED")
+    print("ALL PRE-FLIGHT CHECKS PASSED")
     print("="*60)
     print(f"\nCompleted {len(tests)}/{len(tests)} tests successfully:")
     for i, test_name in enumerate(passed_tests, 1):
-        print(f"  [{i}/{len(tests)}] ✓ {test_name}")
+        print(f"  [{i}/{len(tests)}] [OK] {test_name}")
     print("\n" + "="*60)
     print("Bot is ready to start!")
     print("="*60 + "\n")
