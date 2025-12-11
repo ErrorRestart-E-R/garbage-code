@@ -120,7 +120,7 @@ MEM0_CONFIG = {
 STT_MODEL_ID = "ghost613/faster-whisper-large-v3-turbo-korean" #deepdml/faster-whisper-large-v3-turbo-ct2
 STT_DEVICE = "cuda"           # 옵션: "cuda", "cpu"
 STT_COMPUTE_TYPE = "float16"  # 옵션: "float16", "int8", "float32", "int8_float16"
-STT_LANGUAGE = "ko"           # Whisper 지원 언어 코드
+STT_LANGUAGE = "ko"            # Whisper 지원 언어 코드
 
 # 정확도 파라미터
 # beam_size: 1~∞ (기본값=5, 권장=1~10, 높을수록 정확하지만 느림)
