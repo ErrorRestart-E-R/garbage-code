@@ -36,11 +36,13 @@ class STTSink(AudioSink):
             print(f"Error in write: {e}")
 
 class AudioPlayer:
-    def __init__(self, voice_client, loop):
+    def __init__(self, voice_client, loop, on_audio_start=None, on_audio_end=None):
         self.voice_client = voice_client
         self.loop = loop
         self.queue = asyncio.Queue()
         self.is_playing = False
+        self.on_audio_start = on_audio_start
+        self.on_audio_end = on_audio_end
 
     async def add_audio(self, audio_data):
         await self.queue.put(audio_data)
@@ -60,6 +62,16 @@ class AudioPlayer:
             self.is_playing = False
             return
 
+        # Notify start (schedule on main loop)
+        if self.on_audio_start:
+            try:
+                if asyncio.iscoroutinefunction(self.on_audio_start):
+                    self.loop.call_soon_threadsafe(lambda: self.loop.create_task(self.on_audio_start(audio_data)))
+                else:
+                    self.loop.call_soon_threadsafe(lambda: self.on_audio_start(audio_data))
+            except Exception as e:
+                print(f"on_audio_start error: {e}")
+
         # Convert bytes to AudioSource (WAV -> PCM)
         # FFmpegPCMAudio handles WAV headers automatically
         audio_source = discord.FFmpegPCMAudio(io.BytesIO(audio_data), pipe=True)
@@ -76,5 +88,14 @@ class AudioPlayer:
     def _after_play(self, error):
         if error:
             print(f"Player error: {error}")
+        # Notify end (schedule on main loop)
+        if self.on_audio_end:
+            try:
+                if asyncio.iscoroutinefunction(self.on_audio_end):
+                    self.loop.call_soon_threadsafe(lambda: self.loop.create_task(self.on_audio_end()))
+                else:
+                    self.loop.call_soon_threadsafe(self.on_audio_end)
+            except Exception as e:
+                print(f"on_audio_end error: {e}")
         # Schedule next play on the main loop
         self.loop.call_soon_threadsafe(self._play_next)

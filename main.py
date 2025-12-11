@@ -20,6 +20,10 @@ import asyncio
 import sys
 import logging
 import time
+import io
+import wave
+import math
+import numpy as np
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -31,6 +35,7 @@ from llm_interface import get_response_stream
 from audio_utils import STTSink, AudioPlayer
 from tts_handler import tts_handler
 from logger import setup_logger
+from vts_client import VTubeStudioClient, VTSPluginInfo
 
 # Setup Logging
 logger = setup_logger(__name__, config.LOG_FILE, config.LOG_LEVEL)
@@ -70,6 +75,19 @@ class ConversationController:
             config.TTS_REFERENCE_PROMPT,
             config.TTS_REFERENCE_PROMPT_LANG
         )
+
+        # VTube Studio lipsync (optional)
+        self.vts: Optional[VTubeStudioClient] = None
+        self._vts_lipsync_task: Optional[asyncio.Task] = None
+        if getattr(config, "VTS_ENABLED", False):
+            self.vts = VTubeStudioClient(
+                ws_url=config.VTS_WS_URL,
+                plugin=VTSPluginInfo(
+                    plugin_name=config.VTS_PLUGIN_NAME,
+                    plugin_developer=config.VTS_PLUGIN_DEVELOPER,
+                    auth_token=getattr(config, "VTS_AUTH_TOKEN", ""),
+                ),
+            )
         
         # Async queue for response worker
         self.response_queue: asyncio.Queue = asyncio.Queue()
@@ -288,7 +306,12 @@ class ConversationController:
             logger.warning("Not in voice channel")
             return None
         
-        player = AudioPlayer(vc, self.bot.loop)
+        player = AudioPlayer(
+            vc,
+            self.bot.loop,
+            on_audio_start=self._on_tts_audio_start,
+            on_audio_end=self._on_tts_audio_end,
+        )
         
         full_response = ""
         buffer = ""
@@ -360,6 +383,110 @@ class ConversationController:
         await tts_task
         
         return full_response
+
+    async def _on_tts_audio_start(self, wav_bytes: bytes):
+        """
+        Called when discord audio playback starts (best-effort timing).
+        Drives VTS mouth open parameter using audio RMS envelope.
+        """
+        if not self.vts:
+            return
+
+        # Cancel previous lipsync task if any (shouldn't overlap, but safe)
+        if self._vts_lipsync_task and not self._vts_lipsync_task.done():
+            self._vts_lipsync_task.cancel()
+
+        self._vts_lipsync_task = asyncio.create_task(self._run_vts_lipsync(wav_bytes))
+
+    async def _on_tts_audio_end(self):
+        """
+        Called when discord audio playback ends.
+        """
+        if self._vts_lipsync_task and not self._vts_lipsync_task.done():
+            self._vts_lipsync_task.cancel()
+        self._vts_lipsync_task = None
+
+        # Close mouth
+        if self.vts and self.vts.connected:
+            try:
+                await self.vts.inject_parameter(config.VTS_LIPSYNC_PARAMETER_ID, 0.0)
+            except Exception:
+                pass
+
+    async def _run_vts_lipsync(self, wav_bytes: bytes):
+        """
+        Convert wav bytes -> RMS envelope -> VTS InjectParameterDataRequest.
+        VTS requires re-sending values at least once per second to keep control.
+        """
+        try:
+            # Connect/auth (user must allow plugin once inside VTS)
+            ok = await self.vts.ensure_authenticated() if self.vts else False
+            if not ok:
+                logger.warning(
+                    "VTS not authenticated. Set VTS_AUTH_TOKEN (or allow token request popup in VTS) to enable lipsync."
+                )
+                return
+
+            # Parse wav
+            with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+                channels = wf.getnchannels()
+                sampwidth = wf.getsampwidth()
+                rate = wf.getframerate()
+                nframes = wf.getnframes()
+                pcm = wf.readframes(nframes)
+
+            if sampwidth != 2:
+                logger.warning(f"Unsupported WAV sample width: {sampwidth}")
+                return
+
+            audio = np.frombuffer(pcm, dtype=np.int16)
+            if channels > 1:
+                audio = audio.reshape(-1, channels).mean(axis=1).astype(np.int16)
+
+            # Normalize to float [-1, 1]
+            audio_f = audio.astype(np.float32) / 32768.0
+
+            hz = max(5.0, float(getattr(config, "VTS_LIPSYNC_UPDATE_HZ", 30.0)))
+            hop = int(rate / hz)
+            hop = max(1, hop)
+
+            gain = float(getattr(config, "VTS_LIPSYNC_GAIN", 25.0))
+            smoothing = float(getattr(config, "VTS_LIPSYNC_SMOOTHING", 0.6))
+            vmin = float(getattr(config, "VTS_LIPSYNC_MIN", 0.0))
+            vmax = float(getattr(config, "VTS_LIPSYNC_MAX", 1.0))
+
+            # Simple EMA smoothing
+            ema = 0.0
+            alpha = max(0.0, min(1.0, 1.0 - smoothing))
+
+            # Iterate frames
+            for i in range(0, len(audio_f), hop):
+                chunk = audio_f[i : i + hop]
+                if chunk.size == 0:
+                    break
+
+                rms = float(math.sqrt(float(np.mean(chunk * chunk)) + 1e-12))
+                val = rms * gain
+                val = max(vmin, min(vmax, val))
+
+                ema = (1.0 - alpha) * ema + alpha * val
+
+                await self.vts.inject_parameter(config.VTS_LIPSYNC_PARAMETER_ID, float(ema))
+                await asyncio.sleep(1.0 / hz)
+
+            # End: close mouth
+            await self.vts.inject_parameter(config.VTS_LIPSYNC_PARAMETER_ID, 0.0)
+
+        except asyncio.CancelledError:
+            # On cancel, close mouth quickly
+            try:
+                if self.vts and self.vts.connected:
+                    await self.vts.inject_parameter(config.VTS_LIPSYNC_PARAMETER_ID, 0.0)
+            except Exception:
+                pass
+            raise
+        except Exception as e:
+            logger.error(f"VTS lipsync error: {e}")
     
     async def _tts_worker(self, tts_queue: asyncio.Queue, player: AudioPlayer):
         """TTS conversion worker"""

@@ -67,6 +67,37 @@ USER_TIMEOUT_SECONDS = 60             # 사용자 비활성 타임아웃
 ENABLE_MCP_TOOLS = False  # MCP 도구 호출 활성화/비활성화
 
 # ============================================================================
+# 6.5. VTube Studio (VTS) 연동 - Lip Sync
+# ============================================================================
+# VTube Studio 실행 + Settings > API > Enable API 필요
+# WebSocket: ws://localhost:8001  (VTube Studio Public API)
+VTS_ENABLED = os.getenv("VTS_ENABLED", "false").lower() == "true"
+VTS_WS_URL = os.getenv("VTS_WS_URL", "ws://localhost:8001")
+
+# VTS 플러그인 식별자 (3~32자 권장 - VTS 문서 기준)
+VTS_PLUGIN_NAME = os.getenv("VTS_PLUGIN_NAME", "AiVutber")
+VTS_PLUGIN_DEVELOPER = os.getenv("VTS_PLUGIN_DEVELOPER", "ErrorRestart")
+
+# 최초 1회 토큰 발급 필요 (VTS에서 Allow 클릭)
+# 발급된 토큰을 환경변수로 넣어두면 다음부터 자동 인증됩니다.
+VTS_AUTH_TOKEN = os.getenv("VTS_AUTH_TOKEN", "")
+
+# LipSync 파라미터 (모델마다 다를 수 있음)
+# Live2D 기본 파라미터로 보통 아래 중 하나가 자주 사용됩니다:
+# - ParamMouthOpenY (입 벌림)
+# - ParamMouthForm (입 모양)
+VTS_LIPSYNC_PARAMETER_ID = os.getenv("VTS_LIPSYNC_PARAMETER_ID", "ParamMouthOpenY")
+
+# 업데이트 주기(Hz). VTS는 1초에 최소 1번 이상 값이 들어와야 계속 제어됩니다.
+VTS_LIPSYNC_UPDATE_HZ = float(os.getenv("VTS_LIPSYNC_UPDATE_HZ", "30"))
+
+# 오디오 RMS를 0~1 범위로 매핑할 때 쓰는 게인/스무딩
+VTS_LIPSYNC_GAIN = float(os.getenv("VTS_LIPSYNC_GAIN", "25.0"))
+VTS_LIPSYNC_SMOOTHING = float(os.getenv("VTS_LIPSYNC_SMOOTHING", "0.6"))  # 0~1, 클수록 더 부드럽게
+VTS_LIPSYNC_MIN = float(os.getenv("VTS_LIPSYNC_MIN", "0.0"))
+VTS_LIPSYNC_MAX = float(os.getenv("VTS_LIPSYNC_MAX", "1.0"))
+
+# ============================================================================
 # 7. 메모리 시스템 (Mem0 + Ollama)
 # ============================================================================
 ENABLE_MEMORY = True  # 메모리 시스템 활성화/비활성화
