@@ -58,10 +58,12 @@ def run_stt_process(audio_queue, result_queue, command_queue, status_queue=None)
 
     while True:
         # 1. Check Commands
+        # NOTE: multiprocessing.Queue.empty()는 경쟁 조건이 있어 신뢰하기 어렵습니다.
+        # get_nowait()를 Empty 예외로 drain 하는 방식이 더 안전합니다.
         try:
-            while not command_queue.empty():
-                logger.debug("Command received")
+            while True:
                 cmd, data = command_queue.get_nowait()
+                logger.debug("Command received")
                 if cmd == "LEAVE":
                     user_id = data
                     if user_id in user_buffers:
@@ -71,6 +73,8 @@ def run_stt_process(audio_queue, result_queue, command_queue, status_queue=None)
                     if user_id in user_last_activity:
                         del user_last_activity[user_id]
                     print(f"Cleaned up user {user_id}")
+        except queue.Empty:
+            pass
         except Exception:
             pass
 

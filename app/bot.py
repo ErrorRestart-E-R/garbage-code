@@ -23,7 +23,6 @@ logger = setup_logger(__name__, config.LOG_FILE, config.LOG_LEVEL)
 logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.WARNING)
 logging.getLogger("discord.player").setLevel(logging.WARNING)
 
-
 class BotRuntime:
     """
     Discord bot + 프로세스/큐 wiring (인프라 레이어).
@@ -44,6 +43,11 @@ class BotRuntime:
         self.command_queue: Optional[multiprocessing.Queue] = None
         self.status_queue: Optional[multiprocessing.Queue] = None
         self.stt_process: Optional[multiprocessing.Process] = None
+        # lifecycle / watchdog
+        self._shutdown = False
+        self._stt_watchdog_task: Optional[asyncio.Task] = None
+        self._stt_last_restart_ts: float = 0.0
+        self._stt_consecutive_failures: int = 0
 
         self._register_handlers()
 
@@ -60,6 +64,11 @@ class BotRuntime:
 
             # Start workers
             self.bot.loop.create_task(self.controller.start_workers())
+
+            # Start watchdog (non-blocking)
+            if getattr(config, "STT_WATCHDOG_ENABLED", True):
+                if self._stt_watchdog_task is None or self._stt_watchdog_task.done():
+                    self._stt_watchdog_task = self.bot.loop.create_task(self._stt_watchdog_loop())
 
         @self.bot.event
         async def on_voice_state_update(member, before, after):
@@ -144,10 +153,26 @@ class BotRuntime:
 
     def start_stt_process(self):
         multiprocessing.freeze_support()
-        self.audio_queue = multiprocessing.Queue()
-        self.result_queue = multiprocessing.Queue()
-        self.command_queue = multiprocessing.Queue()
-        self.status_queue = multiprocessing.Queue()
+        if self.audio_queue is None:
+            self.audio_queue = multiprocessing.Queue()
+        if self.result_queue is None:
+            self.result_queue = multiprocessing.Queue()
+        if self.command_queue is None:
+            self.command_queue = multiprocessing.Queue()
+        if self.status_queue is None:
+            self.status_queue = multiprocessing.Queue()
+
+        self._spawn_stt_process()
+
+    def _spawn_stt_process(self) -> None:
+        """
+        현재 보유 중인 Queue 객체는 유지한 채 STT 프로세스를 스폰합니다.
+        """
+        multiprocessing.freeze_support()
+        assert self.audio_queue is not None
+        assert self.result_queue is not None
+        assert self.command_queue is not None
+        assert self.status_queue is not None
 
         self.stt_process = multiprocessing.Process(
             target=run_stt_process,
@@ -156,6 +181,79 @@ class BotRuntime:
         self.stt_process.daemon = True
         self.stt_process.start()
         logger.info("STT process started (independent)")
+
+    def _drain_mp_queue(self, q: Optional[multiprocessing.Queue]) -> None:
+        if not q:
+            return
+        try:
+            while True:
+                q.get_nowait()
+        except queue.Empty:
+            return
+        except Exception:
+            return
+
+    def _restart_stt_process(self, reason: str = "") -> bool:
+        """
+        동일한 큐를 유지한 채 STT 프로세스만 재시작합니다.
+        (STTSink/Controller가 참조하는 큐 객체를 바꾸지 않기 위함)
+        """
+        if self._shutdown:
+            return False
+
+        now = time.time()
+        cooldown = float(getattr(config, "STT_WATCHDOG_RESTART_COOLDOWN_SECONDS", 10.0))
+        if now - self._stt_last_restart_ts < cooldown:
+            return False
+        self._stt_last_restart_ts = now
+
+        logger.warning(f"Restarting STT process. reason={reason}")
+
+        # best-effort stop old process
+        if self.stt_process and self.stt_process.is_alive():
+            try:
+                self.stt_process.terminate()
+                self.stt_process.join(timeout=3)
+            except Exception:
+                pass
+
+        # drain old messages/backlog to avoid stale READY or delayed audio
+        self._drain_mp_queue(self.status_queue)
+        self._drain_mp_queue(self.audio_queue)
+        self._drain_mp_queue(self.command_queue)
+
+        try:
+            self._spawn_stt_process()
+        except Exception as e:
+            logger.error(f"Failed to spawn STT process: {e}")
+            return False
+
+        ok = self._wait_for_stt_ready()
+        if ok:
+            self._stt_consecutive_failures = 0
+            return True
+
+        self._stt_consecutive_failures += 1
+        max_fail = int(getattr(config, "STT_WATCHDOG_MAX_CONSECUTIVE_FAILURES", 3))
+        logger.error(f"STT restart failed ({self._stt_consecutive_failures}/{max_fail})")
+        return False
+
+    async def _stt_watchdog_loop(self) -> None:
+        interval = float(getattr(config, "STT_WATCHDOG_INTERVAL_SECONDS", 5.0))
+        max_fail = int(getattr(config, "STT_WATCHDOG_MAX_CONSECUTIVE_FAILURES", 3))
+
+        logger.info(f"STT watchdog started (interval={interval:.1f}s)")
+        while not self._shutdown and not self.bot.is_closed():
+            await asyncio.sleep(interval)
+
+            if self._shutdown:
+                break
+
+            if not self.stt_process or not self.stt_process.is_alive():
+                ok = await asyncio.to_thread(self._restart_stt_process, "process not alive")
+                if not ok and self._stt_consecutive_failures >= max_fail:
+                    logger.error("STT watchdog exceeded max failures. Stopping watchdog loop.")
+                    break
 
     def _wait_for_stt_ready(self) -> bool:
         """
@@ -213,6 +311,7 @@ class BotRuntime:
         except KeyboardInterrupt:
             pass
         finally:
+            self._shutdown = True
             logger.info("Shutting down...")
             if self.stt_process:
                 self.stt_process.terminate()

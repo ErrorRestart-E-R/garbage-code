@@ -1,6 +1,7 @@
 import asyncio
 import time
 import multiprocessing
+import queue
 from dataclasses import dataclass
 from typing import Optional, Tuple, Any, List, Dict
 
@@ -93,10 +94,20 @@ class ConversationController:
         logger.info("History worker started")
         while True:
             try:
-                if self.result_queue and not self.result_queue.empty():
-                    result = self.result_queue.get_nowait()
-                    user_id = result.get("user_id")
-                    user_text = result.get("text", "")
+                if not self.result_queue:
+                    await asyncio.sleep(0.1)
+                    continue
+
+                # multiprocessing.Queue.empty()는 신뢰하기 어렵습니다.
+                # 이벤트 루프를 막지 않도록 별도 스레드에서 get(timeout)으로 대기합니다.
+                try:
+                    result = await asyncio.to_thread(self.result_queue.get, True, 0.2)
+                except queue.Empty:
+                    continue
+
+                def _handle_result(r: dict):
+                    user_id = r.get("user_id")
+                    user_text = r.get("text", "")
 
                     user_name = "Unknown"
                     if user_id:
@@ -109,7 +120,15 @@ class ConversationController:
                         self.message_counter += 1
                         logger.debug(f"History: Added message #{self.message_counter} from {user_name}")
 
-                await asyncio.sleep(0.01)
+                _handle_result(result)
+
+                # Burst drain: 이미 쌓인 결과는 즉시 처리(추가 thread get 호출 방지)
+                while True:
+                    try:
+                        r2 = self.result_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    _handle_result(r2)
             except Exception as e:
                 logger.error(f"History worker error: {e}", exc_info=True)
                 await asyncio.sleep(0.1)
