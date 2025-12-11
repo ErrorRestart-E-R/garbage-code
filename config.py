@@ -89,7 +89,6 @@ MEMORY_DB_PATH = "./memory_db"
 MEMORY_LLM_MODEL = "gemma3:4b"
 MEMORY_EMBEDDING_MODEL = "embeddinggemma:latest"
 
-
 MEM0_CONFIG = {
     "vector_store": {
         "provider": "chroma",
@@ -118,10 +117,10 @@ MEM0_CONFIG = {
 # 9. STT (Speech-to-Text) 설정
 # ============================================================================
 # 모델 설정
-STT_MODEL_ID = "deepdml/faster-whisper-large-v3-turbo-ct2"
+STT_MODEL_ID = "ghost613/faster-whisper-large-v3-turbo-korean" #deepdml/faster-whisper-large-v3-turbo-ct2
 STT_DEVICE = "cuda"           # 옵션: "cuda", "cpu"
 STT_COMPUTE_TYPE = "float16"  # 옵션: "float16", "int8", "float32", "int8_float16"
-STT_LANGUAGE = "ko"         # Whisper 지원 언어 코드
+STT_LANGUAGE = "ko"           # Whisper 지원 언어 코드
 
 # 정확도 파라미터
 # beam_size: 1~∞ (기본값=5, 권장=1~10, 높을수록 정확하지만 느림)
