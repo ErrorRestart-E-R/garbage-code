@@ -8,3 +8,4 @@ openai
 numpy
 chromadb
 mem0ai
+sentence-transformers  # Hugging Face 임베딩용

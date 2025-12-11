@@ -82,6 +82,9 @@ class ConversationHistory:
         Get conversation history as OpenAI messages format.
         llama.cpp will convert this to chat template (e.g., Gemma3's <start_of_turn>).
         
+        IMPORTANT: Consecutive user messages are merged into one message.
+        Gemma3 chat template requires strict user/assistant alternation.
+        
         Returns:
             (messages, current_speaker, current_message, current_timestamp)
             - messages: List of {"role": "user"/"assistant", "content": "..."}
@@ -96,19 +99,27 @@ class ConversationHistory:
         messages = []
         
         # Convert all entries to OpenAI messages format
-        # User messages: "speaker: text" format
-        # AI messages: just text (as assistant)
+        # Merge consecutive user messages to satisfy Gemma3 chat template
         for entry in history_list:
             if entry.is_ai:
+                # AI message (assistant)
                 messages.append({
                     "role": "assistant",
                     "content": entry.text
                 })
             else:
-                messages.append({
-                    "role": "user",
-                    "content": f"{entry.speaker}: {entry.text}"
-                })
+                # User message - check if we should merge with previous
+                user_content = f"{entry.speaker}: {entry.text}"
+                
+                if messages and messages[-1]["role"] == "user":
+                    # Merge with previous user message
+                    messages[-1]["content"] += f"\n{user_content}"
+                else:
+                    # New user message
+                    messages.append({
+                        "role": "user",
+                        "content": user_content
+                    })
         
         # Get current (last) message info
         current = history_list[-1]
