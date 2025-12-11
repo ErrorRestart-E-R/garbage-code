@@ -2,3 +2,4 @@
 __pycache__
 .venv
 memory_db
+vts_token.txt
