@@ -27,7 +27,7 @@ from typing import Optional, Tuple
 from stt_handler import run_stt_process
 from memory_manager import MemoryManager
 from conversation_history import ConversationHistory
-from llm_interface import judge_conversation, get_response_stream
+from llm_interface import get_response_stream
 from audio_utils import STTSink, AudioPlayer
 from tts_handler import tts_handler
 from logger import setup_logger
@@ -80,12 +80,8 @@ class ConversationController:
         # State
         self.is_responding = False
         self.message_counter = 0  # Unique message ID
-        self.last_judged_index = 0  # Last message index we judged
+        self.last_processed_index = 0  # Last message index we processed
         self.last_response_time = 0  # Timestamp of last AI response completion
-        
-        # Wait state for W (wait and see) responses
-        self.pending_wait: Optional[PendingResponse] = None
-        self.wait_start_time: float = 0
         
         # Result queue from STT process (set externally)
         self.result_queue: Optional[multiprocessing.Queue] = None
@@ -140,17 +136,14 @@ class ConversationController:
                 logger.error(f"History worker error: {e}", exc_info=True)
                 await asyncio.sleep(0.1)
     
-    async def judge_worker(self):
+    async def message_worker(self):
         """
-        Worker 2: Judge whether AI should respond (Y/W/N system)
+        Worker 2: Process new messages and queue for LLM response
         
-        - Y: Respond immediately
-        - W: Wait and see (respond after silence timeout)
-        - N: Do not respond
-        
-        Handles pending wait responses and silence detection.
+        Single 27B LLM handles both judgment and response.
+        LLM will decide whether to respond based on conversation context.
         """
-        logger.info("Judge worker started (Y/W/N system)")
+        logger.info("Message worker started (single LLM mode)")
         
         while True:
             try:
@@ -159,80 +152,14 @@ class ConversationController:
                     await asyncio.sleep(0.1)
                     continue
                 
-                # Check pending wait response (silence detection)
-                if self.pending_wait:
-                    elapsed = time.time() - self.wait_start_time
-                    
-                    # Check if there are new messages (reset timer or override)
-                    if self.message_counter > self.last_judged_index:
-                        # New message arrived while waiting
-                        history_text, current_speaker, current_message, current_timestamp = \
-                            self.history.get_history_and_current()
-                        
-                        if current_speaker and current_message:
-                            # Staleness Check
-                            if time.time() - current_timestamp > config.MESSAGE_STALENESS_THRESHOLD:
-                                logger.warning(f"Skipping stale message #{self.message_counter} (age: {time.time() - current_timestamp:.1f}s)")
-                                self.last_judged_index = self.message_counter
-                                continue
-
-                            current_index = self.message_counter
-                            self.last_judged_index = current_index
-                            
-                            # Judge the new message
-                            participant_count = self.history.get_participant_count()
-                            decision, reason = await judge_conversation(
-                                conversation_history=history_text,
-                                current_speaker=current_speaker,
-                                current_message=current_message,
-                                participant_count=participant_count
-                            )
-                            
-                            print(f"  [Judge: {decision}]")
-                            logger.debug(f"Judge #{current_index} (during wait): {decision} - {reason}")
-                            
-                            if decision == "Y":
-                                # Direct call - cancel wait, respond to new message immediately
-                                self.pending_wait = None
-                                pending = PendingResponse(
-                                    speaker=current_speaker,
-                                    message=current_message,
-                                    history_json=history_text,
-                                    message_index=current_index
-                                )
-                                await self.response_queue.put(pending)
-                                continue
-                            elif decision == "W":
-                                # Another wait - reset timer, keep waiting
-                                if config.WAIT_TIMER_RESET_ON_MESSAGE:
-                                    self.wait_start_time = time.time()
-                                continue
-                            else:  # N
-                                # Not for AI - reset timer, keep waiting for original
-                                if config.WAIT_TIMER_RESET_ON_MESSAGE:
-                                    self.wait_start_time = time.time()
-                                continue
-                    
-                    # Check silence timeout
-                    if elapsed >= config.WAIT_RESPONSE_TIMEOUT:
-                        # Silence timeout - execute pending wait response
-                        print(f"  [Wait timeout: responding]")
-                        logger.debug(f"Wait timeout after {elapsed:.1f}s, executing pending response")
-                        await self.response_queue.put(self.pending_wait)
-                        self.pending_wait = None
-                        continue
-                    
+                # Check for new messages
+                if self.message_counter <= self.last_processed_index:
                     await asyncio.sleep(0.1)
                     continue
                 
-                # No pending wait - check for new messages
-                if self.message_counter <= self.last_judged_index:
-                    await asyncio.sleep(0.1)
-                    continue
-                
-                # Get the latest history state
-                history_text, current_speaker, current_message, current_timestamp = \
-                    self.history.get_history_and_current()
+                # Get conversation history in messages format
+                messages, current_speaker, current_message, current_timestamp = \
+                    self.history.get_messages_for_llm()
                 
                 if not current_speaker or not current_message:
                     await asyncio.sleep(0.1)
@@ -241,71 +168,49 @@ class ConversationController:
                 # Staleness Check
                 if time.time() - current_timestamp > config.MESSAGE_STALENESS_THRESHOLD:
                     logger.warning(f"Skipping stale message #{self.message_counter} (age: {time.time() - current_timestamp:.1f}s)")
-                    self.last_judged_index = self.message_counter
+                    self.last_processed_index = self.message_counter
                     continue
-
-                # Mark as judged before calling LLM
+                
+                # Mark as processed
                 current_index = self.message_counter
-                self.last_judged_index = current_index
+                self.last_processed_index = current_index
                 
-                # Call Judge LLM with latest context
+                # Rate Limiting
+                time_since_last = time.time() - self.last_response_time
+                if time_since_last < config.MIN_RESPONSE_INTERVAL:
+                    wait_time = config.MIN_RESPONSE_INTERVAL - time_since_last
+                    logger.info(f"Rate limit: delaying by {wait_time:.2f}s")
+                    await asyncio.sleep(wait_time)
+                
+                # Queue for response (LLM will decide whether to respond)
                 participant_count = self.history.get_participant_count()
-                
-                decision, reason = await judge_conversation(
-                    conversation_history=history_text,
-                    current_speaker=current_speaker,
-                    current_message=current_message,
-                    participant_count=participant_count
-                )
-                
-                # Print Judge decision to terminal
-                print(f"  [Judge: {decision}]")
-                logger.debug(f"Judge #{current_index}: {decision} - {reason}")
-                
-                # Create pending response
                 pending = PendingResponse(
                     speaker=current_speaker,
                     message=current_message,
-                    history_json=history_text,
+                    history_json=messages,  # Now contains messages list
                     message_index=current_index
                 )
+                await self.response_queue.put((pending, participant_count))
                 
-                if decision == "Y":
-                    # Rate Limiting
-                    time_since_last = time.time() - self.last_response_time
-                    if time_since_last < config.MIN_RESPONSE_INTERVAL:
-                        wait_time = config.MIN_RESPONSE_INTERVAL - time_since_last
-                        logger.info(f"Rate limit: delaying response by {wait_time:.2f}s")
-                        await asyncio.sleep(wait_time)
-
-                    # Respond immediately
-                    await self.response_queue.put(pending)
-                elif decision == "W":
-                    # Enter wait state
-                    self.pending_wait = pending
-                    self.wait_start_time = time.time()
-                    logger.debug(f"Entering wait state for message #{current_index}")
-                # N: do nothing
+                logger.debug(f"Message #{current_index} queued for LLM")
                 
             except Exception as e:
-                logger.error(f"Judge worker error: {e}", exc_info=True)
+                logger.error(f"Message worker error: {e}", exc_info=True)
                 await asyncio.sleep(0.1)
     
     async def response_worker(self):
         """
         Worker 3: Generate responses and play TTS
         
-        - Receives approved responses from judge_worker
-        - Generates LLM response with streaming
-        - Plays TTS audio
-        - When complete, judge_worker will check for new messages
+        Single LLM handles both judgment and response.
+        If LLM decides not to respond, it outputs empty/minimal response.
         """
-        logger.info("Response worker started")
+        logger.info("Response worker started (single LLM mode)")
         
         while True:
             try:
-                # Wait for response request
-                pending: PendingResponse = await self.response_queue.get()
+                # Wait for response request (now includes participant_count)
+                pending, participant_count = await self.response_queue.get()
                 
                 # Mark as responding
                 self.is_responding = True
@@ -314,22 +219,24 @@ class ConversationController:
                     logger.debug(f"Response: Starting for #{pending.message_index}")
                     
                     full_response = await self._execute_response(
-                        user_name=pending.speaker,
-                        user_text=pending.message,
-                        history_json=pending.history_json
+                        messages=pending.history_json,  # Now contains messages list
+                        participant_count=participant_count
                     )
                     
-                    if full_response:
+                    if full_response and full_response.strip():
                         # Add AI response to history
                         self.history.add_ai_response(full_response)
-                        self.last_response_time = time.time()  # Update last response time
+                        self.last_response_time = time.time()
                         logger.debug(f"Response: Completed #{pending.message_index}")
                         
-                        # Add to memory queue (processed sequentially by memory_worker)
+                        # Add to memory queue
                         await self.memory_queue.put((pending.speaker, pending.message))
+                    else:
+                        # LLM decided not to respond
+                        print(f"  [No response]")
+                        logger.debug(f"LLM decided not to respond to #{pending.message_index}")
                     
                 finally:
-                    # Mark as not responding - judge_worker will poll for new messages
                     self.is_responding = False
                 
             except Exception as e:
@@ -368,9 +275,13 @@ class ConversationController:
                 logger.error(f"Memory worker error: {e}", exc_info=True)
                 await asyncio.sleep(0.1)
     
-    async def _execute_response(self, user_name: str, user_text: str, history_json: str) -> Optional[str]:
-        """Generate LLM response and play TTS"""
+    async def _execute_response(self, messages: list, participant_count: int) -> Optional[str]:
+        """
+        Generate LLM response and play TTS.
         
+        Single LLM decides whether to respond based on conversation context.
+        Returns empty string if LLM decides not to respond.
+        """
         # Find Voice Client
         vc = self.bot.voice_clients[0] if self.bot.voice_clients else None
         if not vc:
@@ -381,6 +292,7 @@ class ConversationController:
         
         full_response = ""
         buffer = ""
+        first_chunk = True
         
         # Start TTS worker
         tts_queue = asyncio.Queue()
@@ -388,21 +300,37 @@ class ConversationController:
             self._tts_worker(tts_queue, player)
         )
         
-        # Search long-term memory
-        memory_context = await asyncio.to_thread(
-            self.memory_manager.get_memory_context, user_text, user_name
-        )
+        # Get last user message for memory search
+        last_user_msg = ""
+        last_user_name = ""
+        for msg in reversed(messages):
+            if msg["role"] == "user":
+                # Format: "speaker: text"
+                content = msg["content"]
+                if ": " in content:
+                    last_user_name, last_user_msg = content.split(": ", 1)
+                else:
+                    last_user_msg = content
+                break
         
-        # Start streaming output
-        print(f"{config.AI_NAME}: ", end="", flush=True)
+        # Search long-term memory
+        memory_context = ""
+        if last_user_msg:
+            memory_context = await asyncio.to_thread(
+                self.memory_manager.get_memory_context, last_user_msg, last_user_name
+            )
         
         async for chunk in get_response_stream(
-            user_name=user_name,
-            user_text=user_text,
-            conversation_history=history_json,
+            messages=messages,
+            participant_count=participant_count,
             memory_context=memory_context
         ):
             if chunk:
+                # Print AI name only on first chunk
+                if first_chunk:
+                    print(f"{config.AI_NAME}: ", end="", flush=True)
+                    first_chunk = False
+                
                 print(chunk, end="", flush=True)
                 
                 full_response += chunk
@@ -420,7 +348,8 @@ class ConversationController:
                                 await tts_queue.put(sentence.strip())
                             break
         
-        print()  # Newline
+        if not first_chunk:
+            print()  # Newline only if we printed something
         
         # Process remaining buffer
         if buffer.strip():
@@ -448,11 +377,11 @@ class ConversationController:
     
     async def start_workers(self):
         """Start all async workers"""
-        logger.info("Starting conversation workers...")
+        logger.info("Starting conversation workers (single LLM mode)...")
         
         await asyncio.gather(
             self.history_worker(),
-            self.judge_worker(),
+            self.message_worker(),
             self.response_worker(),
             self.memory_worker(),
         )

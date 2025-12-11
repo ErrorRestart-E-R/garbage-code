@@ -1,137 +1,46 @@
 """
-LLM Interface: LLM-based conversation judgment and response generation
+LLM Interface: Single 27B LLM handles both judgment and response generation
 
-Handles both Judge and Response generation with a single LLM.
-- Judge: Decides whether to join the conversation (Y/N)
-- Response: Generates response (streaming)
+The LLM decides whether to respond based on conversation context.
+If it shouldn't respond, it outputs empty or minimal response.
 
 Using llama.cpp server with OpenAI-compatible API.
-
-IMPORTANT: Separates conversation history from current message
-to prevent LLM from responding to past messages.
+Conversation history is passed in OpenAI messages format,
+llama.cpp converts it to the appropriate chat template (e.g., Gemma3).
 """
 
 from openai import AsyncOpenAI
 import config
 import json
 import mcp_library
-from typing import Tuple, AsyncGenerator
+from typing import Tuple, AsyncGenerator, List, Dict, Optional
 from logger import setup_logger
 
 # Setup logger
 logger = setup_logger(__name__, config.LOG_FILE, config.LOG_LEVEL)
 
 
-async def judge_conversation(conversation_history: str,
-                              current_speaker: str,
-                              current_message: str,
-                              participant_count: int = 1) -> Tuple[str, str]:
+async def get_response_stream(
+    messages: List[Dict[str, str]],
+    participant_count: int = 1,
+    memory_context: str = ""
+) -> AsyncGenerator[Optional[str], None]:
     """
-    Analyzes conversation to determine if AI should respond to the CURRENT message.
+    Single LLM handles both judgment and response generation.
+    
+    The LLM receives conversation history in OpenAI messages format.
+    llama.cpp converts it to chat template (e.g., Gemma3's <start_of_turn>).
+    
+    If the LLM decides not to respond, it outputs empty response.
     
     Args:
-        conversation_history: Past conversation history in JSON format (excludes current)
-        current_speaker: Current speaker name
-        current_message: Current message to judge
-        participant_count: Number of participants
-        
-    Returns:
-        (decision, reason)
-        - decision: "Y" (respond immediately), "W" (wait and see), "N" (don't respond)
-        - reason: Judgment reason (for debugging)
-    """
-    try:
-        client = AsyncOpenAI(
-            base_url=config.LLAMA_CPP_BASE_URL,
-            api_key=config.LLAMA_CPP_API_KEY
-        )
-        
-        # Build system prompt (fixed rules)
-        system_content = config.JUDGE_SYSTEM_PROMPT.format(ai_name=config.AI_NAME)
-        
-        # Build user prompt (dynamic context with history)
-        user_content = config.JUDGE_USER_TEMPLATE.format(
-            participant_count=participant_count,
-            conversation_history=conversation_history,
-            current_speaker=current_speaker,
-            current_message=current_message,
-            ai_name=config.AI_NAME
-        )
-        
-        logger.debug(f"Judge context: participants={participant_count}")
-
-        # Retry loop for robustness
-        for attempt in range(config.JUDGE_MAX_RETRIES):
-            try:
-                response = await client.chat.completions.create(
-                    model=config.LLM_MODEL_NAME,
-                    messages=[
-                        {"role": "system", "content": system_content},
-                        {"role": "user", "content": user_content}
-                    ],
-                    temperature=config.LLM_JUDGE_TEMPERATURE,
-                    top_p=config.LLM_JUDGE_TOP_P,
-                    max_tokens=config.LLM_JUDGE_NUM_PREDICT,
-                    extra_body={
-                        "top_k": config.LLM_JUDGE_TOP_K,
-                    }
-                )
-                
-                
-                # Parse response (OpenAI format)
-                result = response.choices[0].message.content.strip()
-                    
-                clean_result = result.strip().upper()
-                
-                # Determine decision: Y, W, or N
-                if "Y" in clean_result:
-                    decision = "Y"
-                    reason = "Judge: respond immediately"
-                    logger.debug(f"Judge raw: '{result}' -> decision: {decision}")
-                    return decision, reason
-                elif "W" in clean_result:
-                    decision = "W"
-                    reason = "Judge: wait and see"
-                    logger.debug(f"Judge raw: '{result}' -> decision: {decision}")
-                    return decision, reason
-                elif "N" in clean_result:
-                    decision = "N"
-                    reason = "Judge: do not respond"
-                    logger.debug(f"Judge raw: '{result}' -> decision: {decision}")
-                    return decision, reason
-                else:
-                    logger.warning(f"Judge invalid response (attempt {attempt+1}): {result}")
-                    # Retry if invalid
-            
-            except Exception as e:
-                logger.warning(f"Judge attempt {attempt+1} failed: {e}")
-        
-        # Fallback after all retries
-        logger.error("Judge failed all retries, defaulting to N")
-        return "N", "Judge failed all retries"
-        
-    except Exception as e:
-        logger.error(f"Judge critical error: {e}")
-        # Default to not responding on error
-        return "N", f"Judge critical error: {e}"
-
-
-async def get_response_stream(user_name: str,
-                               user_text: str,
-                               conversation_history: str,
-                               memory_context: str = "") -> AsyncGenerator[str, None]:
-    """
-    Generates LLM response via streaming.
-    Clearly separates past conversation from current message.
-    
-    Args:
-        user_name: Current speaker name
-        user_text: Current message to respond to
-        conversation_history: Past conversation history JSON (excludes current)
+        messages: Conversation history in OpenAI messages format
+                 [{"role": "user"/"assistant", "content": "..."}]
+        participant_count: Number of human participants (for context)
         memory_context: Long-term memory context (optional)
         
     Yields:
-        Response text chunks
+        Response text chunks (empty if LLM decides not to respond)
     """
     try:
         client = AsyncOpenAI(
@@ -140,34 +49,25 @@ async def get_response_stream(user_name: str,
         )
         tools = mcp_library.get_tools() if config.ENABLE_MCP_TOOLS else None
         
-        # Build system prompt (fixed personality/rules only)
-        system_content = config.SYSTEM_PROMPT
+        # Build system prompt with participant count context
+        system_content = config.SYSTEM_PROMPT.format(
+            ai_name=config.AI_NAME,
+            participant_count=participant_count
+        )
         
-        # Add long-term memory if available (static context)
+        # Add long-term memory if available
         if memory_context:
             system_content += f"\n\n[LONG-TERM MEMORY]\n{memory_context}"
         
-        # Build user content with dynamic context (history + current message)
-        context_content = config.RESPONSE_CONTEXT_TEMPLATE.format(
-            conversation_history=conversation_history,
-            current_speaker=user_name,
-            current_message=user_text
-        )
+        # Build final messages list: system + conversation history
+        final_messages = [{"role": "system", "content": system_content}] + messages
         
-        # User message contains history + current message + instruction
-        user_content = (
-            f"{context_content}\n\n"
-        )
-        
-        messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": user_content}
-        ]
+        logger.debug(f"LLM request: {len(messages)} messages, {participant_count} participants")
         
         # Streaming request (OpenAI format with llama.cpp extra_body)
         chat_kwargs = {
             "model": config.LLM_MODEL_NAME,
-            "messages": messages,
+            "messages": final_messages,
             "stream": True,
             "temperature": config.LLM_RESPONSE_TEMPERATURE,
             "top_p": config.LLM_RESPONSE_TOP_P,
@@ -226,7 +126,7 @@ async def get_response_stream(user_name: str,
                     tool_result = mcp_library.execute_tool(func_name, func_args)
                     logger.debug(f"Tool result: {tool_result}")
                     
-                    messages.append({
+                    final_messages.append({
                         "role": "assistant",
                         "content": content_buffer,
                         "tool_calls": [{
@@ -235,7 +135,7 @@ async def get_response_stream(user_name: str,
                             "function": tool_call["function"]
                         }]
                     })
-                    messages.append({
+                    final_messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call["id"],
                         "content": tool_result
@@ -244,7 +144,7 @@ async def get_response_stream(user_name: str,
             # Generate final response with tool results
             stream = await client.chat.completions.create(
                 model=config.LLM_MODEL_NAME,
-                messages=messages,
+                messages=final_messages,
                 stream=True,
                 temperature=config.LLM_RESPONSE_TEMPERATURE,
                 top_p=config.LLM_RESPONSE_TOP_P,

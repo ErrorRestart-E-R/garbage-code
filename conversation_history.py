@@ -1,8 +1,8 @@
 """
 ConversationHistory: Conversation history management
 
-Manages up to N conversations in JSON format.
-This history is used for LLM Judge and response generation.
+Manages conversation history in OpenAI messages format.
+llama.cpp will convert this to the appropriate chat template (e.g., Gemma3).
 """
 
 import datetime
@@ -10,7 +10,7 @@ import time
 import json
 from collections import deque
 from dataclasses import dataclass
-from typing import Optional, List, Set, Tuple
+from typing import Optional, List, Set, Tuple, Dict
 
 
 @dataclass
@@ -28,7 +28,7 @@ class ConversationHistory:
     Conversation history management class
     
     - Maintains up to max_size conversations
-    - Can be passed to LLM in JSON format
+    - Returns history in OpenAI messages format for chat template conversion
     - Tracks participants
     """
     
@@ -76,6 +76,49 @@ class ConversationHistory:
             text: AI response content
         """
         return self.add(self.ai_name, text)
+    
+    def get_messages_for_llm(self) -> Tuple[List[Dict[str, str]], Optional[str], Optional[str], float]:
+        """
+        Get conversation history as OpenAI messages format.
+        llama.cpp will convert this to chat template (e.g., Gemma3's <start_of_turn>).
+        
+        Returns:
+            (messages, current_speaker, current_message, current_timestamp)
+            - messages: List of {"role": "user"/"assistant", "content": "..."}
+            - current_speaker: Last speaker name (or None if empty)
+            - current_message: Last message text (or None if empty)
+            - current_timestamp: Raw timestamp of the current message
+        """
+        if not self.history:
+            return [], None, None, 0.0
+        
+        history_list = list(self.history)
+        messages = []
+        
+        # Convert all entries to OpenAI messages format
+        # User messages: "speaker: text" format
+        # AI messages: just text (as assistant)
+        for entry in history_list:
+            if entry.is_ai:
+                messages.append({
+                    "role": "assistant",
+                    "content": entry.text
+                })
+            else:
+                messages.append({
+                    "role": "user",
+                    "content": f"{entry.speaker}: {entry.text}"
+                })
+        
+        # Get current (last) message info
+        current = history_list[-1]
+        
+        return (
+            messages,
+            current.speaker,
+            current.text,
+            current.raw_timestamp
+        )
     
     def get_history_and_current(self) -> Tuple[str, Optional[str], Optional[str], float]:
         """

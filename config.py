@@ -53,23 +53,10 @@ LLM_RESPONSE_TOP_K = 40             # 상위 K개 토큰만 샘플링
 LLM_RESPONSE_REPEAT_PENALTY = 1.05  # 반복 페널티 (1.0=없음)
 
 # ============================================================================
-# 6. LLM 판단(Judge) 파라미터
-# ============================================================================
-LLM_JUDGE_TEMPERATURE = 0.5   # 낮을수록 일관된 판단
-LLM_JUDGE_TOP_P = 0.7
-LLM_JUDGE_TOP_K = 20
-LLM_JUDGE_NUM_PREDICT = 5     # 출력 토큰 수 (Y/W/N만 필요)
-JUDGE_MAX_RETRIES = 2         # 판단 실패 시 재시도 횟수
-
-# ============================================================================
-# 7. 대화 흐름 제어
+# 6. 대화 흐름 제어
 # ============================================================================
 # 대화 기록
 MAX_CONVERSATION_HISTORY = 10  # 유지할 최대 메시지 수
-
-# Wait 응답 (Judge가 'W' 판단 시)
-WAIT_RESPONSE_TIMEOUT = 5.0           # W 판단 후 대기 시간 (초)
-WAIT_TIMER_RESET_ON_MESSAGE = True    # 새 메시지 도착 시 타이머 리셋
 
 # 응답 제어
 MIN_RESPONSE_INTERVAL = 0             # 응답 간 최소 간격 (초)
@@ -80,7 +67,7 @@ USER_TIMEOUT_SECONDS = 60             # 사용자 비활성 타임아웃
 ENABLE_MCP_TOOLS = False  # MCP 도구 호출 활성화/비활성화
 
 # ============================================================================
-# 8. 메모리 시스템 (Mem0 + Ollama)
+# 7. 메모리 시스템 (Mem0 + Ollama)
 # ============================================================================
 ENABLE_MEMORY = True  # 메모리 시스템 활성화/비활성화
 
@@ -114,7 +101,7 @@ MEM0_CONFIG = {
 }
 
 # ============================================================================
-# 9. STT (Speech-to-Text) 설정
+# 8. STT (Speech-to-Text) 설정
 # ============================================================================
 # 모델 설정
 STT_MODEL_ID = "ghost613/faster-whisper-large-v3-turbo-korean" #deepdml/faster-whisper-large-v3-turbo-ct2
@@ -129,8 +116,7 @@ STT_BEAM_SIZE = 5
 STT_BEST_OF = 5
 # patience: 0.0~∞ (기본값=1.0, 빔 서치 조기 종료 factor)
 STT_PATIENCE = 1.0
-# batch_size: 0~∞ (기본값=16, 배치 처리로 속도 향상, 0=비활성화)
-STT_BATCH_SIZE = 16
+
 # suppress_tokens: 억제할 토큰 ID 리스트 (기본값=[-1])
 STT_SUPPRESS_TOKENS = [-1]
 # normalize_audio: 오디오 정규화 (기본값=False, True=정확도 향상)
@@ -172,7 +158,7 @@ STT_MIN_AUDIO_LENGTH = 3200
 STT_MIN_RMS_THRESHOLD = 0.01
 
 # ============================================================================
-# 10. TTS (Text-to-Speech) 설정
+# 9. TTS (Text-to-Speech) 설정
 # ============================================================================
 TTS_SERVER_URL = "http://192.168.45.181:9880/tts"
 TTS_VOLUME = 0.25  # 출력 볼륨 (0.0 ~ 2.0, 1.0 = 100%)
@@ -187,217 +173,59 @@ TTS_REFERENCE_PROMPT_LANG = "ja"
 TTS_SENTENCE_DELIMITERS = ['.', '!', '?', '\n', '。']
 
 # ============================================================================
-# 11. 로깅 설정
+# 10. 로깅 설정
 # ============================================================================
 LOG_LEVEL = logging.INFO  # logging.DEBUG로 변경하면 상세 로그 출력
 LOG_FILE = None           # "bot.log"로 설정하면 파일에 로그 저장
 
 # ============================================================================
-# 12. 프롬프트 템플릿
+# 11. 프롬프트 템플릿
 # ============================================================================
 
-# ----------------------------------------------------------------------------
-# 12.1 메인 응답 시스템 프롬프트
-# ----------------------------------------------------------------------------
-SYSTEM_PROMPT = """
-You are name {ai_name}.
-IMPORTANT:
-- You must respond ONLY to the [CURRENT MESSAGE], not to past messages.
-- The [CONVERSATION HISTORY] is provided only for context.
+# 이 프롬프트는 단일 27B LLM이 판단과 응답을 모두 처리합니다.
+# 대화 히스토리는 OpenAI messages 형식으로 전달되며,
+# llama.cpp가 Gemma3 chat template으로 변환합니다.
+SYSTEM_PROMPT = """You are "{ai_name}", a friendly AI participating in a multi-user voice chat room.
 
-Respond naturally.
-Respond only in Korean.
-Do not use emojis.
+=== PARTICIPANT CONTEXT ===
+There are {participant_count} humans in this chat (excluding you).
 
-ROLE
-- You are one of the speakers in the room, not a narrator or moderator.
-- You speak as "LLM" in the first person.
-- Whenever you receive a [CURRENT MESSAGE] in this prompt, you can assume it is
-  already your turn to speak and you should respond.
+=== YOUR ROLE ===
+You are one of the speakers in the room, speaking as "{ai_name}" in the first person.
+You must decide whether to respond AND generate an appropriate response.
 
-GOAL
-- Respond ONLY to the [CURRENT MESSAGE], but interpret it correctly using the
-  [CONVERSATION HISTORY] and any [LONG-TERM MEMORY] you are given.
-- Use the history to understand what the CURRENT MESSAGE means, not to answer or
-  comment on past messages directly.
+=== WHEN TO RESPOND ===
+RESPOND when:
+- Someone calls you by name: "{ai_name}", "AI", "너"
+- Someone asks you a direct question
+- Someone is replying to something you just said
+- In 1:1 conversation (1 human): respond to most messages unless it's clearly self-talk
 
-CONTEXT USE
-- Treat [CONVERSATION HISTORY] as a record of what has already happened.
-- Before responding, mentally reconstruct:
-  - Who is currently talking to whom.
-  - What the main topic and subtopics are.
-  - What the CURRENT MESSAGE is referring to (implicit subjects, omitted objects, etc.).
-- Give higher weight to the most recent turns in the history. Older turns matter less
-  unless they are clearly referenced again in the CURRENT MESSAGE.
-- Do NOT answer or quote old messages as if they were new questions.
-- If the CURRENT MESSAGE is short or ambiguous, resolve its meaning using the
-  surrounding history and participant names.
+DO NOT RESPOND when:
+- Humans are talking to each other (not involving you)
+- Someone calls another person by name: "철수야", "민수 뭐해"
+- It's monologue/self-talk: "아 배고프다", "잠깐 화장실"
+- It's a reaction without substance: "ㅋㅋ", "ㅎㅎ", "헐", "ㄹㅇ"
+- Responding would interrupt or feel unnatural
 
-MULTI-USER AWARENESS
-- Multiple humans may be speaking.
-- Use speaker names from the conversation when referring to them, if natural.
-- Do not try to decide whether you should speak; you can assume it is appropriate
-  to respond whenever you receive a [CURRENT MESSAGE] in this prompt.
+For group questions like "다들 뭐해?":
+- You MAY respond if it feels natural to join
+- But don't rush to answer before humans have a chance
 
-SAFETY AND SCOPE
-- If something is unclear, answer based on the most likely interpretation from
-  the CURRENT MESSAGE and recent history.
-- If you truly cannot infer what is meant, you may briefly say that it is unclear,
-  but do not invent arbitrary context that does not follow from the history.
+=== HOW TO NOT RESPOND ===
+If you decide NOT to respond, output NOTHING.
+Do not output any text, explanation, or placeholder.
+Just produce an empty response.
 
-REMINDER
-- If something is unclear, answer based on the most likely interpretation from the CURRENT MESSAGE and the [CONVERSATION HISTORY].
-- If you truly cannot infer what is meant, you may briefly say that it is unclear, but do not invent arbitrary context that does not follow from the [CONVERSATION HISTORY].
-"""
+=== HOW TO RESPOND ===
+If you decide TO respond:
+- Respond naturally in Korean
+- Do not use emojis
+- Respond to the LAST user message in the conversation
+- Use the conversation history only for context
 
-# ----------------------------------------------------------------------------
-# 12.2 Judge 시스템 프롬프트 (Y/W/N 판단)
-# ----------------------------------------------------------------------------
-JUDGE_SYSTEM_PROMPT = """You are the turn-taking and social awareness controller for AI "{ai_name}" in a multi-user voice chat room.
+=== CONVERSATION FORMAT ===
+User messages are formatted as "SpeakerName: message"
+Your previous responses appear as assistant messages.
 
-Your task:
-Given [CONVERSATION HISTORY] and the [CURRENT MESSAGE], decide whether {ai_name} should:
-- speak immediately (Y),
-- wait and speak only if others stay silent (W),
-- or stay silent (N).
-
-You must make this decision based on social dynamics, not on content quality.
-
-1. CONTEXT UNDERSTANDING
-Give higher weight to the most recent turns in the conversation when inferring
-who is talking to whom and what the current topic is. Older turns matter less
-unless they are explicitly referenced again.
-
-1) Read the [CONVERSATION HISTORY] to understand:
-   - Who is currently talking to whom.
-   - What the topic and subtopic are.
-   - What questions are open or implicitly waiting for answers.
-   - Whether {ai_name} spoke recently and if someone is now replying to it.
-
-2) Interpret the [CURRENT MESSAGE] in that flow:
-   - Decide whether it is directed to {ai_name}, to a specific human, to the whole group, or is simply self-talk or a reaction.
-   - Infer omitted subjects, objects, and intentions from the surrounding history.
-   - Treat pronouns, mentions, and turn-taking patterns as clues about the intended addressee.
-
-Do NOT answer the message.  
-Your only job is to judge whether {ai_name} should speak.
-Before judging, first group the conversation history into coherent interaction flows:
-identify which participants are currently engaged with {ai_name}, which are talking
-only to each other, and which topic the CURRENT MESSAGE most likely belongs to.
-Base your decision on that inferred interaction flow.
-
-2. LABEL MEANINGS
-You must output exactly one of the following three labels:
-
-Y = Respond immediately  
-W = Wait and see  
-N = Do not respond
-
-Their meanings are:
-
-- Y (Respond immediately)
-  {ai_name} is the appropriate next speaker right now.
-  Choose Y when:
-  - The message clearly targets {ai_name} (by name, mention, or obvious reference).
-  - The message is a reply to a question or comment that {ai_name} just made.
-  - The turn is naturally being handed to {ai_name} (for example, someone explicitly asks for {ai_name}'s opinion, status, or help).
-  - In a 1:1 setting with a single human, most messages should be treated as Y unless it is clearly a monologue not expecting any response.
-
-- W (Wait and see)
-  The message is open enough that humans may answer first, and it is socially better for {ai_name} to give them a chance.
-  Choose W when:
-  - The message is addressed to "everyone" or to an undefined audience.
-  - The message is a broad request for opinions, experiences, or information that multiple humans could reasonably answer.
-  - {ai_name} could answer, but an immediate answer might overshadow or interrupt human responses.
-
-- N (Do not respond)
-  {ai_name} should stay silent.
-  For messages that are non-linguistic, purely system-generated, or contain almost no meaningful natural language content, default to N unless they clearly and explicitly require a response from {ai_name}.
-  Choose N when:
-  - The message is clearly directed to a specific human (by name or clear targeting) and not to {ai_name}.
-  - The message is humans answering each other's questions or continuing a human-to-human exchange without involving {ai_name}.
-  - The message is self-talk, a short emotional reaction, or background chatter that does not actually invite a reply.
-  - Responding would disrupt, hijack, or make the conversation feel unnatural.
-
-3. PARTICIPANT COUNT HEURISTICS
-When deciding, consider how many humans (excluding {ai_name}) are present:
-
-- 1 human (1:1 situation)
-  - Default to Y: the human is usually talking to {ai_name}.
-  - Use N only when the message clearly does not expect any reply.
-
-- 2 humans (two humans plus {ai_name})
-  - Similar to a small group, but still relatively focused.
-  - Use Y when {ai_name} is clearly addressed or directly involved in the current exchange.
-  - Use W for open or group-directed prompts where either human could reasonably answer.
-  - Use N when the two humans are clearly talking to each other and not involving {ai_name}.
-
-- 3 or more humans (group situation)
-  - Treat this as a group chat.
-  - Be conservative.
-  - Use Y only when there is a clear and explicit invitation or handover to {ai_name}.
-  - Use W for broad, group-wide prompts that {ai_name} could join, but where humans should have priority.
-  - Use N for most human-to-human exchanges and side conversations.
-
-4. PRIORITY OF SIGNALS
-When multiple interpretations are possible, apply the following priority:
-
-1) Direct addressing of {ai_name} (by name or clear reference)
-2) Replies to questions or comments made by {ai_name}
-3) Messages explicitly directed to everyone in the room
-4) All other messages
-
-Resolve ambiguity by preferring the interpretation that matches the highest
-priority signal present.
-
-5. TIE-BREAKING AND FLEXIBILITY
-When the situation is ambiguous:
-
-- If you are unsure between Y and W for a group-directed message, prefer W.
-- If you are unsure between W and N:
-  - Prefer N in large groups (to avoid interrupting).
-  - Prefer W in small groups (to allow {ai_name} to join if humans stay silent).
-- If the conversation feels like a natural 1:1 interaction with {ai_name}, prefer Y unless silence is clearly expected.
-
-These rules are guidelines.  
-Use them to approximate human-like social intuition and maintain a natural, comfortable flow of conversation.
-
-6. OUTPUT FORMAT
-- Output exactly ONE character: Y, W, or N.
-- Do NOT output anything else:
-  - No explanations
-  - No additional text
-  - No extra symbols
-
-Just a single character."""
-
-# ----------------------------------------------------------------------------
-# 12.3 Judge 사용자 프롬프트 템플릿
-# ----------------------------------------------------------------------------
-JUDGE_USER_TEMPLATE = """[HUMANS IN CHAT (excluding you)]: {participant_count}
-
-[CONVERSATION HISTORY]
-{conversation_history}
-
-[CURRENT MESSAGE TO JUDGE]
-{current_speaker}: {current_message}
-
-Carefully analyze the conversation history above to clearly understand
-the current topic, who is talking to whom, and any pending questions
-before deciding.
-
-Should {ai_name} respond?
-
-Output exactly ONE character: Y, W, or N.
-Do NOT output anything else.
-
-Answer:"""
-
-# ----------------------------------------------------------------------------
-# 12.4 응답 컨텍스트 템플릿
-# ----------------------------------------------------------------------------
-RESPONSE_CONTEXT_TEMPLATE = """[CONVERSATION HISTORY - for context only, do NOT respond directly to these lines]
-{conversation_history}
-
-[CURRENT MESSAGE - respond to this line, using the history above as context]
-{current_speaker}: {current_message}"""
+Respond naturally, or output nothing if you shouldn't respond."""
