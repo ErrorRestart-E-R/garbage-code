@@ -42,11 +42,7 @@ AI_NAME = "LLM"  # AI의 이름 (프롬프트에서 사용됨)
 # 메인 LLM 서버 (응답 생성용)
 LLAMA_CPP_BASE_URL = "http://192.168.45.28:5000/v1"
 LLAMA_CPP_API_KEY = "not-needed"  # llama.cpp는 API 키 불필요
-LLM_MODEL_NAME = "gemma-3-12b-it-qat-q4_0-gguf"
-
-# 임베딩 서버 (메모리 시스템용)
-#LLAMA_CPP_EMBEDDING_BASE_URL = "http://192.168.45.181:5000/v1"
-MEMORY_EMBEDDING_MODEL = "qwen3-embedding:4b"
+LLM_MODEL_NAME = "default"  # llama.cpp는 이미 로드된 모델 사용 (이름 무시)
 
 # ============================================================================
 # 5. LLM 응답 생성 파라미터
@@ -84,28 +80,30 @@ USER_TIMEOUT_SECONDS = 60             # 사용자 비활성 타임아웃
 ENABLE_MCP_TOOLS = False  # MCP 도구 호출 활성화/비활성화
 
 # ============================================================================
-# 8. 메모리 시스템 (Mem0 + ChromaDB)
+# 8. 메모리 시스템 (Mem0 + Ollama)
 # ============================================================================
-ENABLE_MEMORY = True  # mem0 메모리 시스템 활성화/비활성화
+ENABLE_MEMORY = True  # 메모리 시스템 활성화/비활성화
 
 MEMORY_DB_PATH = "./memory_db"
+
+MEMORY_LLM_MODEL = "gemma3:4b"
+MEMORY_EMBEDDING_MODEL = "embeddinggemma:latest"
+
 
 MEM0_CONFIG = {
     "vector_store": {
         "provider": "chroma",
         "config": {
-            "collection_name": "LLM_memory",
+            "collection_name": "ai_memory", 
             "path": MEMORY_DB_PATH,
         },
     },
     "llm": {
-        "provider": "openai",
+        "provider": "ollama",
         "config": {
-            "model": LLM_MODEL_NAME,
+            "model": MEMORY_LLM_MODEL,
             "temperature": 0,
             "max_tokens": 512,
-            "openai_base_url": LLAMA_CPP_BASE_URL,
-            "api_key": LLAMA_CPP_API_KEY,
         },
     },
     "embedder": {

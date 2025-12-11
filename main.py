@@ -74,6 +74,9 @@ class ConversationController:
         # Async queue for response worker
         self.response_queue: asyncio.Queue = asyncio.Queue()
         
+        # Memory save queue (for sequential processing)
+        self.memory_queue: asyncio.Queue = asyncio.Queue()
+        
         # State
         self.is_responding = False
         self.message_counter = 0  # Unique message ID
@@ -322,10 +325,8 @@ class ConversationController:
                         self.last_response_time = time.time()  # Update last response time
                         logger.debug(f"Response: Completed #{pending.message_index}")
                         
-                        # Save user message to long-term memory (after LLM response to avoid contention)
-                        asyncio.create_task(
-                            self._save_memory_background(pending.speaker, pending.message)
-                        )
+                        # Add to memory queue (processed sequentially by memory_worker)
+                        await self.memory_queue.put((pending.speaker, pending.message))
                     
                 finally:
                     # Mark as not responding - judge_worker will poll for new messages
@@ -336,14 +337,36 @@ class ConversationController:
                 self.is_responding = False
                 await asyncio.sleep(0.1)
     
-    async def _save_memory_background(self, user_name: str, user_text: str):
-        """Background memory saving task"""
-        try:
-            await asyncio.to_thread(
-                self.memory_manager.save_memory, user_name, user_text
-            )
-        except Exception as e:
-            logger.error(f"Memory save error: {e}")
+    async def memory_worker(self):
+        """
+        Worker 4: Memory Save Queue Processor
+        
+        - Processes memory saves sequentially (one at a time)
+        - Prevents concurrent Ollama LLM calls
+        - Runs independently from other workers
+        """
+        logger.info("Memory worker started (sequential queue processing)")
+        
+        while True:
+            try:
+                # Wait for memory save request
+                user_name, user_text = await self.memory_queue.get()
+                
+                # Save to long-term memory (blocking, but in separate thread)
+                try:
+                    await asyncio.to_thread(
+                        self.memory_manager.save_memory, user_name, user_text
+                    )
+                    logger.debug(f"Memory saved for {user_name}")
+                except Exception as e:
+                    logger.error(f"Memory save error: {e}")
+                
+                # Mark task as done
+                self.memory_queue.task_done()
+                
+            except Exception as e:
+                logger.error(f"Memory worker error: {e}", exc_info=True)
+                await asyncio.sleep(0.1)
     
     async def _execute_response(self, user_name: str, user_text: str, history_json: str) -> Optional[str]:
         """Generate LLM response and play TTS"""
@@ -431,6 +454,7 @@ class ConversationController:
             self.history_worker(),
             self.judge_worker(),
             self.response_worker(),
+            self.memory_worker(),
         )
     
     # Participant management

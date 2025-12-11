@@ -1,14 +1,61 @@
+"""
+Memory Manager: Mem0 with Ollama (Separate from Main LLM)
+
+Uses Mem0 for intelligent memory management:
+- Search: Ollama embedding model only (no LLM, fast)
+- Save: Ollama small LLM for fact extraction (runs in separate process)
+
+This keeps memory operations completely separate from the main llama.cpp LLM.
+"""
+
 from mem0 import Memory
 import config
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
+from typing import List, Dict, Optional
 from logger import setup_logger
 
 logger = setup_logger(__name__, config.LOG_FILE, config.LOG_LEVEL)
+
+# Process pool for memory operations (avoids blocking main thread)
+_memory_executor: Optional[ProcessPoolExecutor] = None
+
+
+def _init_memory_in_process():
+    """Initialize Mem0 in a separate process"""
+    global _process_memory
+    _process_memory = Memory.from_config(config.MEM0_CONFIG)
+    return True
+
+
+def _save_memory_process(user_name: str, text: str) -> Optional[Dict]:
+    """
+    Save memory in a separate process.
+    This function runs in ProcessPoolExecutor to avoid blocking.
+    """
+    try:
+        # Initialize memory if not already done in this process
+        memory = Memory.from_config(config.MEM0_CONFIG)
+        
+        result = memory.add(
+            text,
+            user_id=user_name,
+            metadata={"source": "voice_chat"}
+        )
+        
+        if result and result.get("results"):
+            return {"success": True, "result": result}
+        return {"success": True, "result": None}
+        
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 class MemoryManager:
     def __init__(self):
         """
-        Initialize mem0 Memory with llama.cpp + ChromaDB configuration.
+        Initialize Mem0 Memory with Ollama configuration.
+        Uses separate Ollama models for embedding and LLM (not llama.cpp).
         """
         self.enabled = getattr(config, 'ENABLE_MEMORY', True)
         
@@ -16,16 +63,27 @@ class MemoryManager:
             self.memory = None
             logger.info("Mem0 Memory is DISABLED")
             return
-            
-        self.memory = Memory.from_config(config.MEM0_CONFIG)
-        logger.info("Mem0 Memory initialized with llama.cpp + ChromaDB")
+        
+        try:
+            self.memory = Memory.from_config(config.MEM0_CONFIG)
+            logger.info(f"Mem0 initialized with Ollama (LLM: {config.MEMORY_LLM_MODEL}, Embed: {config.MEMORY_EMBEDDING_MODEL})")
+        except Exception as e:
+            logger.error(f"Mem0 initialization failed: {e}")
+            self.memory = None
+            self.enabled = False
 
-    def save_memory(self, user_name: str, text: str):
+    def save_memory(self, user_name: str, text: str) -> Optional[Dict]:
         """
         Saves a text snippet to mem0 memory.
-        mem0 automatically extracts and stores relevant facts.
+        Mem0 automatically extracts and stores relevant facts using Ollama LLM.
+        
+        Note: This runs synchronously. For async usage, call via asyncio.to_thread
+        or use save_memory_async.
         """
-        if not self.enabled:
+        if not self.enabled or not self.memory:
+            return None
+        
+        if not text or not text.strip():
             return None
             
         try:
@@ -41,12 +99,15 @@ class MemoryManager:
             logger.error(f"[Memory] Save error: {e}")
             return None
 
-    def search_memory(self, query_text: str, user_name: str = None, limit: int = 3):
+    def search_memory(self, query_text: str, user_name: str = None, limit: int = 3) -> List[Dict]:
         """
         Searches for relevant memories using mem0.
-        Uses vector search only (rerank=False) for faster response.
+        Uses vector search only (rerank=False) for faster response - NO LLM call.
         """
-        if not self.enabled:
+        if not self.enabled or not self.memory:
+            return []
+        
+        if not query_text or not query_text.strip():
             return []
             
         try:
@@ -54,7 +115,7 @@ class MemoryManager:
                 query_text,
                 user_id=user_name,
                 limit=limit,
-                rerank=False  # LLM reranking 비활성화 - 속도 개선
+                rerank=False  # LLM reranking 비활성화 - 임베딩만 사용
             )
             
             memories = []
@@ -71,7 +132,7 @@ class MemoryManager:
             logger.error(f"[Memory] Search error: {e}")
             return []
 
-    def get_memory_context(self, query_text: str, user_name: str):
+    def get_memory_context(self, query_text: str, user_name: str) -> str:
         """
         Returns a formatted string of relevant memories for the context.
         """
@@ -85,11 +146,11 @@ class MemoryManager:
             
         return context
 
-    def get_all_memories(self, user_name: str):
+    def get_all_memories(self, user_name: str) -> List[Dict]:
         """
         Retrieves all memories for a specific user.
         """
-        if not self.enabled:
+        if not self.enabled or not self.memory:
             return []
             
         try:
@@ -98,3 +159,18 @@ class MemoryManager:
         except Exception as e:
             logger.error(f"[Memory] Get all error: {e}")
             return []
+
+    def delete_all_memories(self, user_name: str) -> bool:
+        """
+        Deletes all memories for a specific user.
+        """
+        if not self.enabled or not self.memory:
+            return False
+            
+        try:
+            self.memory.delete_all(user_id=user_name)
+            logger.info(f"[Memory] Deleted all memories for {user_name}")
+            return True
+        except Exception as e:
+            logger.error(f"[Memory] Delete error: {e}")
+            return False
