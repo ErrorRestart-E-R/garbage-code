@@ -19,9 +19,9 @@ class tts_handler:
             "prompt_lang": self.reference_prompt_lang,            # str.(required) language of the prompt text for the reference audio
             "top_k": 5,                   # int. top k sampling
             "top_p": 1,                   # float. top p sampling
-            "temperature": 1,             # float. temperature for sampling
+            "temperature": 0.1,             # float. temperature for sampling
             "text_split_method": "cut0",  # str. text split method, see text_segmentation_method.py for details.
-            "batch_size": 16,              # int. batch size for inference
+            "batch_size": 1,              # int. batch size for inference
             "batch_threshold": 0.75,      # float. threshold for batch splitting.
             "split_bucket": True,         # bool. whether to split the batch into multiple buckets.
             "speed_factor":1.2,           # float. control the speed of the synthesized audio.

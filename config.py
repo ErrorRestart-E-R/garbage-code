@@ -113,7 +113,7 @@ VTS_LIPSYNC_MAX = 1.0
 ENABLE_MEMORY = True  # 메모리 시스템 활성화/비활성화
 MEMORY_DB_PATH = "./memory_db"
 MEMORY_LLM_MODEL = "exaone3.5:2.4b"
-MEMORY_EMBEDDING_MODEL = "dragonkue/BGE-m3-ko"
+MEMORY_EMBEDDING_MODEL = "embeddinggemma:latest"
 
 MEM0_CONFIG = {
     "vector_store": {
@@ -132,14 +132,11 @@ MEM0_CONFIG = {
         },
     },
     "embedder": {
-        "provider": "huggingface",
+        "provider": "ollama",
         "config": {
             "model": MEMORY_EMBEDDING_MODEL,
         },
     },
-    # Mem0 fact extraction이 {"facts": [...]} 형태를 엄격히 기대합니다.
-    # 일부 소형 모델에서 키가 바뀌거나 다른 포맷이 섞이면 KeyError('facts')가 발생할 수 있어
-    # 한국어로, 그리고 "facts" 키 고정으로 강하게 지시합니다.
     "custom_fact_extraction_prompt": """
     너는 '개인 정보/선호/계획'을 장기 기억으로 저장하기 위해 사실(fact)만 추출하는 시스템이다.
     반드시 아래 JSON 오브젝트 1개만 출력하라. 다른 설명/문장/코드블록/마크다운은 절대 출력하지 마.
@@ -161,7 +158,7 @@ MEM0_CONFIG = {
 # 8. STT (Speech-to-Text) 설정
 # ============================================================================
 # 모델 설정
-STT_MODEL_ID = "ghost613/faster-whisper-large-v3-turbo-korean" #deepdml/faster-whisper-large-v3-turbo-ct2
+STT_MODEL_ID = "Systran/faster-whisper-large-v3" #faster-whisper-large-v3-turbo-korean
 STT_DEVICE = "cuda"           # 옵션: "cuda", "cpu"
 STT_COMPUTE_TYPE = "float16"  # 옵션: "float16", "int8", "float32", "int8_float16"
 STT_LANGUAGE = "ko"            # Whisper 지원 언어 코드
