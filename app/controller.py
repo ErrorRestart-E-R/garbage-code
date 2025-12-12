@@ -222,6 +222,19 @@ class ConversationController:
 
     async def start_workers(self):
         logger.info("Starting conversation workers (clean architecture split)...")
+        
+        # VTS 인증 (봇 시작 전에 완료)
+        if self.vts:
+            try:
+                logger.info("Authenticating with VTube Studio...")
+                ok = await self.vts.ensure_authenticated()
+                if ok:
+                    logger.info("VTS authenticated successfully")
+                else:
+                    logger.warning("VTS authentication failed - lipsync will be disabled")
+            except Exception as e:
+                logger.error(f"VTS authentication error: {e}")
+        
         await asyncio.gather(
             self.history_worker(),
             self.message_worker(),

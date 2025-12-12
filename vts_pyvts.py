@@ -13,6 +13,7 @@ pyvts 기반 VTube Studio Public API 어댑터.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
@@ -51,6 +52,8 @@ class PyVTSClientAdapter:
         )
 
         self._vts: Optional[Any] = None
+        self._auth_lock = asyncio.Lock()
+        self._authenticated = False
 
     @property
     def connected(self) -> bool:
@@ -84,42 +87,62 @@ class PyVTSClientAdapter:
         """
         - 토큰이 없으면: AuthenticationTokenRequest로 발급(사용자 Allow 필요) 후 파일 저장
         - 토큰이 있으면: AuthenticationRequest로 세션 인증
+        - 락을 사용해 동시 인증 시도를 방지합니다.
         """
-        if not self._vts or not self.connected:
-            await self.connect()
-        assert self._vts is not None
+        # 이미 인증됨 (빠른 경로)
+        if self._authenticated and self._vts and self._vts.get_authentic_status() == 2:
+            return True
 
-        # 1) 토큰 확보 (토큰 파일 로드 시도)
-        if not getattr(self._vts, "authentic_token", None):
-            await self._vts.read_token()
+        async with self._auth_lock:
+            # 락 획득 후 다시 확인 (다른 코루틴이 인증 완료했을 수 있음)
+            if self._authenticated and self._vts and self._vts.get_authentic_status() == 2:
+                return True
 
-        if not getattr(self._vts, "authentic_token", None) or force_token_request:
-            await self._vts.request_authenticate_token(force=force_token_request)
+            try:
+                if not self._vts or not self.connected:
+                    await self.connect()
+                assert self._vts is not None
 
-        # 2) 세션 인증
-        ok = await self._vts.request_authenticate()
+                # 1) 토큰 확보 (토큰 파일 로드 시도)
+                if not getattr(self._vts, "authentic_token", None):
+                    await self._vts.read_token()
 
-        return bool(ok)
+                if not getattr(self._vts, "authentic_token", None) or force_token_request:
+                    await self._vts.request_authenticate_token(force=force_token_request)
+
+                # 2) 세션 인증
+                resp = await self._vts.request_authenticate()
+                # pyvts returns dict or bool depending on version
+                if isinstance(resp, dict):
+                    ok = resp.get("data", {}).get("authenticated", False)
+                else:
+                    ok = bool(resp)
+
+                self._authenticated = ok
+                return ok
+            except Exception as e:
+                print(f"VTS auth error: {e}")
+                self._authenticated = False
+                return False
 
     async def inject_parameter(self, param_id: str, value: float, mode: str = "set", face_found: bool = False) -> None:
+        # 인증되지 않으면 무시 (lipsync는 고빈도로 호출되므로 여기서 인증 시도하지 않음)
+        if not self._authenticated:
+            return
         if not self._vts or not self.connected:
-            await self.connect()
-        assert self._vts is not None
+            return
 
-        # lipsync는 지속적으로 값을 보내며, 인증이 안 된 경우 경고 후 종료될 수 있으니
-        # 여기서는 best-effort로 인증을 시도합니다.
-        if self._vts.get_authentic_status() != 2:
-            ok = await self.ensure_authenticated()
-            if not ok:
-                return
-
-        msg = self._vts.vts_request.requestSetParameterValue(
-            parameter=param_id,
-            value=float(value),
-            face_found=bool(face_found),
-            mode=str(mode),
-        )
-        await self._vts.request(msg)
+        try:
+            msg = self._vts.vts_request.requestSetParameterValue(
+                parameter=param_id,
+                value=float(value),
+                face_found=bool(face_found),
+                mode=str(mode),
+            )
+            await self._vts.request(msg)
+        except Exception:
+            # 연결 끊김 등 - 무시하고 다음 프레임에서 재시도
+            pass
 
     async def list_hotkeys_in_current_model(self, model_id: str = "", live2d_item_file_name: str = "") -> Dict[str, Any]:
         """

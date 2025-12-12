@@ -31,7 +31,7 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 COMMAND_PREFIX = "!"
 # 비보안 설정은 config.py에서 직접 수정하도록 상수로 둡니다.
-ENABLE_PREFLIGHT_CHECKS = False
+ENABLE_PREFLIGHT_CHECKS = True
 
 # ============================================================================
 # 3. AI 페르소나 설정
@@ -95,17 +95,14 @@ VTS_EMOTION_HOTKEY_MAP = {
 }
 
 # LipSync 파라미터 (모델마다 다를 수 있음)
-# Live2D 기본 파라미터로 보통 아래 중 하나가 자주 사용됩니다:
-# - ParamMouthOpenY (입 벌림)
-# - ParamMouthForm (입 모양)
-VTS_LIPSYNC_PARAMETER_ID = "ParamMouthOpenY"
+VTS_LIPSYNC_PARAMETER_ID = "MouthOpen"
 
 # 업데이트 주기(Hz). VTS는 1초에 최소 1번 이상 값이 들어와야 계속 제어됩니다.
 VTS_LIPSYNC_UPDATE_HZ = 30.0
 
 # 오디오 RMS를 0~1 범위로 매핑할 때 쓰는 게인/스무딩
 VTS_LIPSYNC_GAIN = 25.0
-VTS_LIPSYNC_SMOOTHING = 0.6  # 0~1, 클수록 더 부드럽게
+VTS_LIPSYNC_SMOOTHING = 0.5  # 0~1, 클수록 더 부드럽게
 VTS_LIPSYNC_MIN = 0.0
 VTS_LIPSYNC_MAX = 1.0
 
@@ -137,7 +134,6 @@ MEM0_CONFIG = {
         "provider": "huggingface",
         "config": {
             "model": MEMORY_EMBEDDING_MODEL,
-            "device": "cuda",
         },
     },
 }
