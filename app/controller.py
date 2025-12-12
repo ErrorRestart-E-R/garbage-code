@@ -2,10 +2,12 @@ import asyncio
 import time
 import multiprocessing
 import queue
+import re
 from dataclasses import dataclass
 from typing import Optional, Tuple, Any, List, Dict
 
 import config
+import mcp_library
 from logger import setup_logger
 
 from memory_manager import MemoryManager
@@ -268,6 +270,55 @@ class ConversationController:
     # ---------------------------
     # Internals
     # ---------------------------
+    def _try_mcp_shortcut(self, user_text: str) -> Optional[str]:
+        """
+        MCP 툴을 "확실한 사실" 질문에 대해 우선 적용해 LLM 환각을 줄입니다.
+        (LLM tool-calling이 항상 안정적이지 않을 수 있어, 최소한의 하드 라우팅을 둡니다.)
+        """
+        if not getattr(config, "ENABLE_MCP_TOOLS", False):
+            return None
+
+        text = (user_text or "").strip()
+        if not text:
+            return None
+
+        compact = re.sub(r"\s+", "", text)
+
+        # 현재 시간/날짜
+        if any(
+            k in compact
+            for k in (
+                "현재시간",
+                "지금시간",
+                "현재시각",
+                "지금시각",
+                "지금몇시",
+                "몇시야",
+                "몇시냐",
+                "몇시",
+                "시간알려줘",
+                "오늘날짜",
+                "오늘며칠",
+                "오늘몇일",
+                "날짜알려줘",
+            )
+        ):
+            return mcp_library.get_current_time()
+
+        # 계산 (명확한 수식만)
+        if re.fullmatch(r"[0-9+\-*/(). ]+", text) and any(op in text for op in ("+", "*", "/")):
+            return mcp_library.calculate(text)
+
+        # 날씨 (도시가 명시된 경우만)
+        if "날씨" in text:
+            m = re.search(r"([가-힣A-Za-z]+?)(?:의)?\s*날씨", text)
+            if m:
+                city = m.group(1).strip()
+                if city and city not in {"오늘", "지금", "현재"}:
+                    return mcp_library.get_weather(city)
+
+        return None
+
     async def _execute_response(self, messages: List[Dict[str, str]], participant_count: int) -> Optional[str]:
         vc = self._get_voice_client()
         if not vc:
@@ -286,12 +337,32 @@ class ConversationController:
         last_user_name = ""
         for msg in reversed(messages):
             if msg.get("role") == "user":
-                content = msg.get("content", "")
-                if ": " in content:
-                    last_user_name, last_user_msg = content.split(": ", 1)
+                content = (msg.get("content") or "").strip()
+                if not content:
+                    continue
+
+                # user 메시지는 여러 명의 발화가 한 블록으로 합쳐질 수 있어(연속 user merge),
+                # 가장 마지막 줄을 "최신 발화"로 간주합니다.
+                lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
+                last_line = lines[-1] if lines else content
+
+                if ": " in last_line:
+                    last_user_name, last_user_msg = last_line.split(": ", 1)
                 else:
-                    last_user_msg = content
+                    last_user_msg = last_line
                 break
+
+        # 확실한 사실 질문은 MCP 툴로 처리(환각 방지)
+        tool_shortcut = self._try_mcp_shortcut(last_user_msg)
+        if tool_shortcut and tool_shortcut.strip():
+            print(f"{config.AI_NAME}: {tool_shortcut}")
+
+            tts_queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
+            tts_task = asyncio.create_task(self._tts_worker(tts_queue, player))
+            await tts_queue.put(tool_shortcut.strip())
+            await tts_queue.put(None)
+            await tts_task
+            return tool_shortcut
 
         memory_context = ""
         if last_user_msg:

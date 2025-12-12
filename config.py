@@ -49,10 +49,10 @@ LLM_MODEL_NAME = "default"  # llama.cpp는 이미 로드된 모델 사용 (이�
 # ============================================================================
 # 5. LLM 응답 생성 파라미터
 # ============================================================================
-LLM_RESPONSE_TEMPERATURE = 0.8      # 창의성 (0.0=결정적, 1.0=창의적)
-LLM_RESPONSE_TOP_P = 0.92           # 누적 확률 샘플링
-LLM_RESPONSE_TOP_K = 40             # 상위 K개 토큰만 샘플링
-LLM_RESPONSE_REPEAT_PENALTY = 1.05  # 반복 페널티 (1.0=없음)
+LLM_RESPONSE_TEMPERATURE = 0.5      # 창의성 (0.0=결정적, 1.0=창의적)
+#LLM_RESPONSE_TOP_P = 0.92           # 누적 확률 샘플링
+#LLM_RESPONSE_TOP_K = 40             # 상위 K개 토큰만 샘플링
+#LLM_RESPONSE_REPEAT_PENALTY = 1.05  # 반복 페널티 (1.0=없음)
 
 # ============================================================================
 # 6. 대화 흐름 제어
@@ -66,7 +66,8 @@ MESSAGE_STALENESS_THRESHOLD = 60.0    # 메시지 유효 기간 (초)
 USER_TIMEOUT_SECONDS = 60             # 사용자 비활성 타임아웃
 
 # MCP 도구 호출
-ENABLE_MCP_TOOLS = False  # MCP 도구 호출 활성화/비활성화
+# - get_current_time / get_weather / calculate 등 "사실 기반" 응답은 툴로 처리하는 편이 안전합니다.
+ENABLE_MCP_TOOLS = True  # MCP 도구 호출 활성화/비활성화
 
 # ============================================================================
 # 6.5. VTube Studio (VTS) 연동 - Lip Sync
@@ -136,6 +137,24 @@ MEM0_CONFIG = {
             "model": MEMORY_EMBEDDING_MODEL,
         },
     },
+    # Mem0 fact extraction이 {"facts": [...]} 형태를 엄격히 기대합니다.
+    # 일부 소형 모델에서 키가 바뀌거나 다른 포맷이 섞이면 KeyError('facts')가 발생할 수 있어
+    # 한국어로, 그리고 "facts" 키 고정으로 강하게 지시합니다.
+    "custom_fact_extraction_prompt": """
+    너는 '개인 정보/선호/계획'을 장기 기억으로 저장하기 위해 사실(fact)만 추출하는 시스템이다.
+    반드시 아래 JSON 오브젝트 1개만 출력하라. 다른 설명/문장/코드블록/마크다운은 절대 출력하지 마.
+
+    출력 형식(키 이름 고정):
+    {"facts": ["..."]}
+
+    규칙:
+    - "facts" 값은 문자열 리스트여야 한다.
+    - 저장할 내용이 없으면 {"facts": []} 를 출력한다.
+    - 사용자의 개인 정보(이름, 생일/기념일, 관계), 선호/싫어함, 목표/계획, 반복적으로 유지되는 설정만 추출한다.
+    - 일반 상식/객관적 사실(예: '나무에는 가지가 있다')은 저장하지 않는다.
+    - 입력 언어가 한국어면 facts도 한국어로 작성한다.
+    - 키 이름은 반드시 "facts"만 사용한다(다른 키 금지).
+    """.strip(),
 }
 
 # ============================================================================
@@ -319,6 +338,12 @@ Before responding, analyze the conversation:
 - React before explaining when appropriate
 - Ask questions to keep dialogue flowing
 - Match the energy of the room
+
+# TOOLS (MCP)
+- You have access to tools: get_current_time, get_weather, calculate.
+- If the user asks for current time/date, weather, or a calculation, you MUST use the relevant tool and NEVER guess.
+- When you decide to call a tool, output no normal text first (no preface). Only call the tool.
+- After receiving the tool result, respond naturally in Korean using the tool output as the factual base.
 
 # HOW TO NOT RESPOND
 If you decide NOT to respond, output absolutely nothing.

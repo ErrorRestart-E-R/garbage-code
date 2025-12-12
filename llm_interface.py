@@ -70,10 +70,10 @@ async def get_response_stream(
             "messages": final_messages,
             "stream": True,
             "temperature": config.LLM_RESPONSE_TEMPERATURE,
-            "top_p": config.LLM_RESPONSE_TOP_P,
+            #"top_p": config.LLM_RESPONSE_TOP_P,
             "extra_body": {
-                "top_k": config.LLM_RESPONSE_TOP_K,
-                "repeat_penalty": config.LLM_RESPONSE_REPEAT_PENALTY,
+                #"top_k": config.LLM_RESPONSE_TOP_K,
+                #"repeat_penalty": config.LLM_RESPONSE_REPEAT_PENALTY,
             }
         }
         if tools:
@@ -147,10 +147,10 @@ async def get_response_stream(
                 messages=final_messages,
                 stream=True,
                 temperature=config.LLM_RESPONSE_TEMPERATURE,
-                top_p=config.LLM_RESPONSE_TOP_P,
+                #top_p=config.LLM_RESPONSE_TOP_P,
                 extra_body={
-                    "top_k": config.LLM_RESPONSE_TOP_K,
-                    "repeat_penalty": config.LLM_RESPONSE_REPEAT_PENALTY,
+                    #"top_k": config.LLM_RESPONSE_TOP_K,
+                    #"repeat_penalty": config.LLM_RESPONSE_REPEAT_PENALTY,
                 }
             )
             async for chunk in stream:

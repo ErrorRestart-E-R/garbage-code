@@ -75,26 +75,32 @@ class BotRuntime:
             if member.bot or not self.controller:
                 return
 
-            # Participant joined
-            if (
-                after.channel
-                and after.channel.guild.voice_client
-                and after.channel == after.channel.guild.voice_client.channel
-            ):
+            # NOTE:
+            # discord.py의 on_voice_state_update는 "채널 이동"뿐 아니라
+            # mute/deaf/stream 등 각종 상태 변화에도 호출됩니다.
+            # 따라서 before/after 채널 변화 기준으로 join/leave를 판별해야
+            # 로그/참가자 목록이 중복 갱신되지 않습니다.
+
+            guild = after.channel.guild if after.channel else (before.channel.guild if before.channel else None)
+            voice_client = guild.voice_client if guild else None
+            bot_channel = voice_client.channel if voice_client else None
+            if not bot_channel:
+                return
+
+            before_in_bot = bool(before.channel and before.channel == bot_channel)
+            after_in_bot = bool(after.channel and after.channel == bot_channel)
+
+            # Participant joined (entered bot's current voice channel)
+            if (not before_in_bot) and after_in_bot:
                 self.controller.add_participant(member.display_name)
                 logger.info(f"{member.display_name} joined voice")
 
-            # Participant left
-            elif (
-                before.channel
-                and before.channel.guild.voice_client
-                and before.channel == before.channel.guild.voice_client.channel
-            ):
+            # Participant left (left bot's current voice channel, including moves)
+            elif before_in_bot and (not after_in_bot):
                 self.controller.remove_participant(member.display_name)
                 logger.info(f"{member.display_name} left voice")
 
-            # Notify STT process when user leaves
-            if before.channel and not after.channel:
+                # Notify STT process when user leaves the bot's channel
                 if self.command_queue:
                     self.command_queue.put(("LEAVE", member.id))
 
