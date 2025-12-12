@@ -12,12 +12,9 @@ class STTSink(AudioSink):
         self.audio_queue = audio_queue
         print("STTSink initialized.")
 
-        # 48kHz -> 16kHz (decimate by 3) 품질 개선:
-        # 간단 슬라이싱([::3])은 anti-aliasing이 없어 STT 품질 저하 가능.
-        # FIR 저역통과 필터 후 3배 decimate (스트리밍 상태 유지)
         self._decim = 3
         self._fir_taps = self._design_lowpass_fir(num_taps=63, cutoff=0.5 / self._decim * 0.9).astype(np.float32)
-        # 사용자별 스트리밍 상태(여러 사용자가 동시에 말하면 상태가 섞이면 안 됨)
+
         self._fir_state_by_user: dict[int, np.ndarray] = {}
         self._state_last_seen: dict[int, float] = {}
         self._last_prune_ts: float = 0.0
