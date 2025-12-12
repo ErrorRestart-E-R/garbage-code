@@ -182,7 +182,7 @@ JSON 규칙(중요):
 # 8. STT (Speech-to-Text) 설정
 # ============================================================================
 # 모델 설정
-STT_MODEL_ID = "Systran/faster-whisper-large-v3"
+STT_MODEL_ID = "deepdml/faster-whisper-large-v3-turbo-ct2"
 STT_DEVICE = "cuda"           # 옵션: "cuda", "cpu"
 STT_COMPUTE_TYPE = "float16"  # 옵션: "float16", "int8", "float32", "int8_float16"
 STT_LANGUAGE = "ko"            # Whisper 지원 언어 코드
@@ -254,17 +254,14 @@ TTS_VOLUME = 0.25  # 출력 볼륨 (0.0 ~ 2.0, 1.0 = 100%)
 TTS_LANG = "ko"    # 출력 언어
 
 # TTS 합성(서버 추론) 파라미터
-# - `sample_steps`가 속도에 가장 큰 영향을 줍니다(낮을수록 빠름, 품질/자연스러움은 다소 하락 가능).
-# - RTX 3060 기준으로는 12~20 사이가 "빠른 대화"에 실용적인 경우가 많습니다.
-TTS_SAMPLE_STEPS = 8
+TTS_SAMPLE_STEPS = 16
 TTS_BATCH_SIZE = 16
 TTS_SPEED_FACTOR = 1.2
 TTS_PARALLEL_INFER = True
 TTS_STREAMING_MODE = False
 TTS_STREAM_HTTP_CHUNK_SIZE_BYTES = 16384
 
-# 성능 계측(느릴 때 원인 파악용). True면 TTS 응답당 latency/RTF를 로그로 찍습니다.
-TTS_LOG_LATENCY = True
+TTS_LOG_LATENCY = False
 
 # TTS HTTP 클라이언트 설정
 TTS_HTTP_TIMEOUT_TOTAL_SECONDS = 120.0

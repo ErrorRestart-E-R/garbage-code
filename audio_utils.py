@@ -120,6 +120,90 @@ class AudioPlayer:
         self.on_pcm = on_pcm
         self._current_cleanup: Optional[Callable[[], None]] = None
 
+    async def add_audio(self, audio_data):
+        """
+        Enqueue audio for playback.
+
+        - audio_data: raw WAV bytes or QueuedAudio
+        """
+        # Backward compatible: accept raw bytes or QueuedAudio
+        if isinstance(audio_data, (bytes, bytearray)):
+            item = QueuedAudio(input=bytes(audio_data), start_payload=bytes(audio_data))
+        elif isinstance(audio_data, QueuedAudio):
+            item = audio_data
+        else:
+            # Unsupported
+            return
+
+        await self.queue.put(item)
+        if not self.is_playing:
+            self._play_next()
+
+    def _play_next(self):
+        try:
+            item = self.queue.get_nowait()
+        except asyncio.QueueEmpty:
+            self.is_playing = False
+            return
+
+        self.is_playing = True
+        self._current_cleanup = item.cleanup
+
+        # Notify start (schedule on main loop)
+        if self.on_audio_start:
+            try:
+                if asyncio.iscoroutinefunction(self.on_audio_start):
+                    self.loop.call_soon_threadsafe(lambda: self.loop.create_task(self.on_audio_start(item.start_payload)))
+                else:
+                    self.loop.call_soon_threadsafe(lambda: self.on_audio_start(item.start_payload))
+            except Exception as e:
+                print(f"on_audio_start error: {e}")
+
+        # Build AudioSource (WAV -> PCM). FFmpegPCMAudio handles WAV headers automatically.
+        src = item.input
+        if isinstance(src, (bytes, bytearray)):
+            src = io.BytesIO(bytes(src))
+
+        audio_source: discord.AudioSource = discord.FFmpegPCMAudio(src, pipe=True)
+
+        # Apply volume control
+        audio_source = discord.PCMVolumeTransformer(audio_source, volume=config.TTS_VOLUME)
+
+        # Optional PCM observer for real-time lipsync, etc.
+        if self.on_pcm:
+            audio_source = PCMObserverAudioSource(audio_source, self.on_pcm)
+
+        if self.voice_client and self.voice_client.is_connected():
+            self.voice_client.play(audio_source, after=self._after_play)
+        else:
+            print("Voice client not connected. Skipping audio.")
+            self.is_playing = False
+
+    def _after_play(self, error):
+        if error:
+            print(f"Player error: {error}")
+
+        # Per-item cleanup (stream cancel, etc.)
+        try:
+            if self._current_cleanup:
+                self._current_cleanup()
+        except Exception:
+            pass
+        self._current_cleanup = None
+
+        # Notify end (schedule on main loop)
+        if self.on_audio_end:
+            try:
+                if asyncio.iscoroutinefunction(self.on_audio_end):
+                    self.loop.call_soon_threadsafe(lambda: self.loop.create_task(self.on_audio_end()))
+                else:
+                    self.loop.call_soon_threadsafe(self.on_audio_end)
+            except Exception as e:
+                print(f"on_audio_end error: {e}")
+
+        # Schedule next play on the main loop
+        self.loop.call_soon_threadsafe(self._play_next)
+
 
 class BlockingByteStream(io.RawIOBase):
     """
@@ -231,81 +315,3 @@ class PCMObserverAudioSource(discord.AudioSource):
             self._inner.cleanup()
         except Exception:
             pass
-
-    async def add_audio(self, audio_data):
-        # Backward compatible: accept raw bytes or QueuedAudio
-        if isinstance(audio_data, (bytes, bytearray)):
-            item = QueuedAudio(input=bytes(audio_data), start_payload=bytes(audio_data))
-        elif isinstance(audio_data, QueuedAudio):
-            item = audio_data
-        else:
-            # Unsupported
-            return
-
-        await self.queue.put(item)
-        if not self.is_playing:
-            self._play_next()
-
-    def _play_next(self):
-        try:
-            item: QueuedAudio = self.queue.get_nowait()
-        except asyncio.QueueEmpty:
-            self.is_playing = False
-            return
-
-        self.is_playing = True
-        self._current_cleanup = item.cleanup
-
-        # Notify start (schedule on main loop)
-        if self.on_audio_start:
-            try:
-                if asyncio.iscoroutinefunction(self.on_audio_start):
-                    self.loop.call_soon_threadsafe(lambda: self.loop.create_task(self.on_audio_start(item.start_payload)))
-                else:
-                    self.loop.call_soon_threadsafe(lambda: self.on_audio_start(item.start_payload))
-            except Exception as e:
-                print(f"on_audio_start error: {e}")
-
-        # Build AudioSource (WAV -> PCM). FFmpegPCMAudio handles WAV headers automatically.
-        src = item.input
-        if isinstance(src, (bytes, bytearray)):
-            src = io.BytesIO(bytes(src))
-
-        audio_source: discord.AudioSource = discord.FFmpegPCMAudio(src, pipe=True)
-        
-        # Apply volume control
-        audio_source = discord.PCMVolumeTransformer(audio_source, volume=config.TTS_VOLUME)
-
-        # Optional PCM observer for real-time lipsync, etc.
-        if self.on_pcm:
-            audio_source = PCMObserverAudioSource(audio_source, self.on_pcm)
-        
-        if self.voice_client and self.voice_client.is_connected():
-            self.voice_client.play(audio_source, after=self._after_play)
-        else:
-            print("Voice client not connected. Skipping audio.")
-            self.is_playing = False
-
-    def _after_play(self, error):
-        if error:
-            print(f"Player error: {error}")
-
-        # Per-item cleanup (stream cancel, etc.)
-        try:
-            if self._current_cleanup:
-                self._current_cleanup()
-        except Exception:
-            pass
-        self._current_cleanup = None
-
-        # Notify end (schedule on main loop)
-        if self.on_audio_end:
-            try:
-                if asyncio.iscoroutinefunction(self.on_audio_end):
-                    self.loop.call_soon_threadsafe(lambda: self.loop.create_task(self.on_audio_end()))
-                else:
-                    self.loop.call_soon_threadsafe(self.on_audio_end)
-            except Exception as e:
-                print(f"on_audio_end error: {e}")
-        # Schedule next play on the main loop
-        self.loop.call_soon_threadsafe(self._play_next)
