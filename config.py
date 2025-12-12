@@ -112,7 +112,7 @@ VTS_LIPSYNC_MAX = 1.0
 # ============================================================================
 ENABLE_MEMORY = True  # 메모리 시스템 활성화/비활성화
 MEMORY_DB_PATH = "./memory_db"
-MEMORY_LLM_MODEL = "exaone3.5:2.4b"
+MEMORY_LLM_MODEL = "ingu627/exaone4.0:1.2b"
 MEMORY_EMBEDDING_MODEL = "embeddinggemma:latest"
 OLLAMA_BASE_URL = "http://localhost:11434"
 
@@ -129,7 +129,7 @@ MEM0_CONFIG = {
         "provider": "ollama",
         "config": {
             "model": MEMORY_LLM_MODEL,
-            "temperature": 0,
+            "temperature": 1.0,
             "max_tokens": 512,
             "ollama_base_url": OLLAMA_BASE_URL,
         },
@@ -142,27 +142,47 @@ MEM0_CONFIG = {
         },
     },
     "custom_fact_extraction_prompt": """
-    너는 '개인 정보/선호/계획'을 장기 기억으로 저장하기 위해 사실(fact)만 추출하는 시스템이다.
-    반드시 아래 JSON 오브젝트 1개만 출력하라. 다른 설명/문장/코드블록/마크다운은 절대 출력하지 마.
+너는 '개인 정보/선호/계획'을 장기 기억으로 저장하기 위해 사실(fact)만 추출하는 시스템이다.
+반드시 아래 JSON 오브젝트 1개만 출력하라. 다른 설명/문장/코드블록/마크다운은 절대 출력하지 마.
 
-    출력 형식(키 이름 고정):
-    {"facts": ["..."]}
+출력 형식(키 이름 고정):
+{"facts": ["..."]}
 
-    규칙:
-    - "facts" 값은 문자열 리스트여야 한다.
-    - 저장할 내용이 없으면 {"facts": []} 를 출력한다.
-    - 사용자의 개인 정보(이름, 생일/기념일, 관계), 선호/싫어함, 목표/계획, 반복적으로 유지되는 설정만 추출한다.
-    - 일반 상식/객관적 사실(예: '나무에는 가지가 있다')은 저장하지 않는다.
-    - 입력 언어가 한국어면 facts도 한국어로 작성한다.
-    - 키 이름은 반드시 "facts"만 사용한다(다른 키 금지).
-    """.strip(),
+JSON 규칙(중요):
+- 반드시 유효한 JSON이어야 한다(RFC 8259).
+- 키/문자열은 반드시 큰따옴표(")를 사용한다. 작은따옴표(') 사용 금지.
+- trailing comma(끝 쉼표) 금지.
+- 줄바꿈은 가능하지만, JSON 오브젝트 1개만 출력한다.
+
+추출 규칙:
+- "facts" 값은 문자열 리스트여야 한다.
+- 저장할 내용이 없으면 반드시 {"facts": []} 를 출력한다.
+- 사용자에 대한 '지속적으로 유효한 정보'만 저장한다:
+  - 개인 정보: 이름, 생일/기념일, 관계
+  - 선호/싫어함: 음식/취미/취향/알레르기 등
+  - 목표/계획: 앞으로 하려는 일, 일정, 습관
+  - 반복적으로 유지되는 설정: 자주 바뀌지 않는 설정/환경
+- 일반 상식/객관적 사실, 잡담, 질문(예: 역사 설명 요청)은 저장하지 않는다.
+- 입력 언어가 한국어면 facts도 한국어로 작성한다.
+- 키 이름은 반드시 "facts"만 사용한다(다른 키 금지).
+
+예시:
+[입력] "홍길동: 내 생일은 3월 2일이야"
+[출력] {"facts": ["홍길동의 생일은 3월 2일"]} 
+
+[입력] "홍길동: 나는 매운 음식 좋아해"
+[출력] {"facts": ["홍길동은 매운 음식을 좋아한다"]} 
+
+[입력] "홍길동: 우크라이나의 역사에 대해 알려줘"
+[출력] {"facts": []}
+""".strip(),
 }
 
 # ============================================================================
 # 8. STT (Speech-to-Text) 설정
 # ============================================================================
 # 모델 설정
-STT_MODEL_ID = "ghost613/faster-whisper-large-v3-turbo-korean"
+STT_MODEL_ID = "openai/whisper-large-v3"
 STT_DEVICE = "cuda"           # 옵션: "cuda", "cpu"
 STT_COMPUTE_TYPE = "float16"  # 옵션: "float16", "int8", "float32", "int8_float16"
 STT_LANGUAGE = "ko"            # Whisper 지원 언어 코드
@@ -233,7 +253,19 @@ TTS_SERVER_URL = "http://192.168.45.181:9880/tts"
 TTS_VOLUME = 0.25  # 출력 볼륨 (0.0 ~ 2.0, 1.0 = 100%)
 TTS_LANG = "ko"    # 출력 언어
 
-# TTS HTTP 클라이언트 설정 
+# TTS 합성(서버 추론) 파라미터
+# - `sample_steps`가 속도에 가장 큰 영향을 줍니다(낮을수록 빠름, 품질/자연스러움은 다소 하락 가능).
+# - RTX 3060 기준으로는 12~20 사이가 "빠른 대화"에 실용적인 경우가 많습니다.
+TTS_SAMPLE_STEPS = 8
+TTS_BATCH_SIZE = 16
+TTS_SPEED_FACTOR = 1.2
+TTS_PARALLEL_INFER = True
+TTS_STREAMING_MODE = False
+
+# 성능 계측(느릴 때 원인 파악용). True면 TTS 응답당 latency/RTF를 로그로 찍습니다.
+TTS_LOG_LATENCY = True
+
+# TTS HTTP 클라이언트 설정
 TTS_HTTP_TIMEOUT_TOTAL_SECONDS = 120.0
 TTS_HTTP_TIMEOUT_CONNECT_SECONDS = 10.0
 TTS_HTTP_TIMEOUT_SOCK_READ_SECONDS = 120.0
@@ -265,6 +297,11 @@ SYSTEM_PROMPT = """# CONTEXT
 - Extract what is being asked (question/request), any constraints, and references to earlier messages.
 - If you are addressed but the request is ambiguous, ask a single clarification question.
 
+# VOICE OUTPUT (TTS-friendly)
+- Output plain Korean text only (no Markdown, no bullet lists, no code blocks).
+- Prefer short sentences and include sentence-ending punctuation so speech can start quickly.
+- Keep replies concise by default. If the user asks for "상세/자세히", explain briefly and offer to continue.
+
 # RESPONSE RULES
 ## Respond when:
 - You are directly addressed or explicitly asked something.
@@ -278,9 +315,8 @@ SYSTEM_PROMPT = """# CONTEXT
 
 # TOOLS (MCP)
 - You have access to tools: get_current_time, get_weather, calculate.
-- If the user asks for current time/date, weather, or a calculation, you MUST use the relevant tool and NEVER guess.
-- When you decide to call a tool, output no normal text first. Only call the tool.
-- After receiving the tool result, respond in Korean using the tool output as the factual base.
+- Only use these tools when the user explicitly asks for current time/date, weather, or a calculation.
+- Never guess time/date/weather. If tool results are present as [TOOL RESULTS] in the system message, treat them as authoritative.
 
 # OUTPUT
 - Answer in Korean.

@@ -107,51 +107,50 @@ async def get_response_stream(
                     content_buffer += content
                     has_yielded = True
                     yield content
-        
-        # Process tool calls (tool_calls가 존재하면 content 유무와 상관없이 실행)
+                    
         if tool_calls_accumulated:
+            tool_lines: list[str] = []
             for tool_call in tool_calls_accumulated:
                 func_name = tool_call["function"]["name"]
                 func_args_str = tool_call["function"]["arguments"]
-                
+
                 try:
                     func_args = json.loads(func_args_str) if func_args_str else {}
                 except json.JSONDecodeError:
                     func_args = {}
-                
-                if func_name:
-                    logger.debug(f"Tool call: {func_name}({func_args})")
-                    tool_result = mcp_library.execute_tool(func_name, func_args)
-                    logger.debug(f"Tool result: {tool_result}")
-                    
-                    final_messages.append({
-                        "role": "assistant",
-                        # OpenAI tool calling 규격상 tool_calls가 있으면 content는 빈 문자열/None이어도 됩니다.
-                        # (여기서는 누적된 텍스트를 함께 남겨 컨텍스트 일관성을 유지합니다.)
-                        "content": content_buffer,
-                        "tool_calls": [{
-                            "id": tool_call["id"],
-                            "type": "function",
-                            "function": tool_call["function"]
-                        }]
-                    })
-                    final_messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call["id"],
-                        "content": tool_result
-                    })
-            
-            # Generate final response with tool results
+
+                if not func_name:
+                    continue
+
+                logger.debug(f"Tool call: {func_name}({func_args})")
+                tool_result = mcp_library.execute_tool(func_name, func_args)
+                logger.debug(f"Tool result: {tool_result}")
+
+                # Keep this compact — it gets injected into system prompt.
+                try:
+                    args_repr = json.dumps(func_args, ensure_ascii=False)
+                except Exception:
+                    args_repr = str(func_args)
+                tool_lines.append(f"- {func_name}({args_repr}): {tool_result}")
+
+            # Inject tool results into the system message (single system message only)
+            system_with_tools = system_content
+            if tool_lines:
+                system_with_tools += "\n\n[TOOL RESULTS]\n" + "\n".join(tool_lines)
+
+            # Re-run generation WITHOUT adding tool-role messages to keep strict alternation
+            messages_with_tools = [{"role": "system", "content": system_with_tools}] + messages
+
             stream = await client.chat.completions.create(
                 model=config.LLM_MODEL_NAME,
-                messages=final_messages,
+                messages=messages_with_tools,
                 stream=True,
                 temperature=config.LLM_RESPONSE_TEMPERATURE,
                 top_p=config.LLM_RESPONSE_TOP_P,
                 extra_body={
                     "top_k": config.LLM_RESPONSE_TOP_K,
                     "repeat_penalty": config.LLM_RESPONSE_REPEAT_PENALTY,
-                }
+                },
             )
             async for chunk in stream:
                 delta = chunk.choices[0].delta if chunk.choices else None

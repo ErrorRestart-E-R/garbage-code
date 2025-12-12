@@ -214,7 +214,9 @@ class ConversationController:
             try:
                 user_name, user_text = await self.memory_queue.get()
                 try:
-                    await asyncio.to_thread(self.memory_manager.save_memory, user_name, user_text)
+                    # Avoid memory pollution / noisy extraction on irrelevant messages
+                    if self.memory_manager.should_save_memory(user_text):
+                        await asyncio.to_thread(self.memory_manager.save_memory, user_name, user_text)
                 except Exception as e:
                     logger.error(f"Memory save error: {e}")
                 self.memory_queue.task_done()
@@ -375,6 +377,35 @@ class ConversationController:
         buffer = ""
         first_chunk = True
 
+        # Split only by sentence delimiters (no length-based chunking)
+        tts_split_delims = list(getattr(config, "TTS_SENTENCE_DELIMITERS", ['.', '!', '?', '\n', '。']))
+
+        async def _drain_buffer_to_tts_queue(force: bool = False) -> None:
+            nonlocal buffer
+
+            # 1) Split by sentence delimiters as soon as possible
+            while True:
+                hit_idx = -1
+                hit_delim = None
+                for d in tts_split_delims:
+                    i = buffer.find(d)
+                    if i != -1 and (hit_idx == -1 or i < hit_idx):
+                        hit_idx = i
+                        hit_delim = d
+                if hit_idx == -1 or hit_delim is None:
+                    break
+
+                cut = hit_idx + len(hit_delim)
+                chunk_text = (buffer[:cut]).strip()
+                buffer = buffer[cut:]
+                if chunk_text:
+                    await tts_queue.put(chunk_text)
+
+            # 2) Force flush remainder (end of stream)
+            if force and buffer.strip():
+                await tts_queue.put(buffer.strip())
+                buffer = ""
+
         tts_queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
         tts_task = asyncio.create_task(self._tts_worker(tts_queue, player))
 
@@ -394,21 +425,14 @@ class ConversationController:
             full_response += chunk
             buffer += chunk
 
-            if any(p in buffer for p in config.TTS_SENTENCE_DELIMITERS):
-                for punct in config.TTS_SENTENCE_DELIMITERS:
-                    if punct in buffer:
-                        parts = buffer.split(punct, 1)
-                        sentence = parts[0] + punct
-                        buffer = parts[1] if len(parts) > 1 else ""
-                        if sentence.strip():
-                            await tts_queue.put(sentence.strip())
-                        break
+            # Drain buffer to TTS queue continuously (delimiter-based only)
+            await _drain_buffer_to_tts_queue(force=False)
 
         if not first_chunk:
             print()
 
-        if buffer.strip():
-            await tts_queue.put(buffer.strip())
+        # Flush any remaining buffered text
+        await _drain_buffer_to_tts_queue(force=True)
 
         await tts_queue.put(None)
         await tts_task

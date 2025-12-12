@@ -1,6 +1,26 @@
 import aiohttp
 import config
 import asyncio
+import io
+import time
+import wave
+from logger import setup_logger
+
+logger = setup_logger(__name__, config.LOG_FILE, config.LOG_LEVEL)
+
+
+def _wav_duration_seconds(wav_bytes: bytes) -> float:
+    """
+    Best-effort WAV duration estimator for latency/RTF logging.
+    Returns 0.0 if parsing fails.
+    """
+    try:
+        with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+            rate = wf.getframerate() or 0
+            frames = wf.getnframes() or 0
+            return (frames / float(rate)) if rate > 0 else 0.0
+    except Exception:
+        return 0.0
 
 class tts_handler:
     def __init__(self, server_url, reference_file, reference_prompt, reference_prompt_lang):
@@ -9,7 +29,6 @@ class tts_handler:
         self.reference_prompt = reference_prompt
         self.reference_prompt_lang = reference_prompt_lang
 
-        # aiohttp 권장: 세션을 재사용해서 커넥션 풀/keep-alive 활용
         self._session: aiohttp.ClientSession | None = None
         self._session_lock = asyncio.Lock()
 
@@ -29,7 +48,6 @@ class tts_handler:
             connector = aiohttp.TCPConnector(
                 limit=int(getattr(config, "TTS_HTTP_MAX_CONNECTIONS", 10)),
                 ttl_dns_cache=300,
-                enable_cleanup_closed=True,
             )
             self._session = aiohttp.ClientSession(timeout=timeout, connector=connector)
             return self._session
@@ -45,6 +63,14 @@ class tts_handler:
         self._session = None
 
     async def get_async(self, prompt, prompt_lang):
+        # Pull knobs from config (safe defaults if missing)
+        sample_steps = int(getattr(config, "TTS_SAMPLE_STEPS", 32))
+        batch_size = int(getattr(config, "TTS_BATCH_SIZE", 32))
+        speed_factor = float(getattr(config, "TTS_SPEED_FACTOR", 1.2))
+        parallel_infer = bool(getattr(config, "TTS_PARALLEL_INFER", True))
+        streaming_mode = bool(getattr(config, "TTS_STREAMING_MODE", False))
+        log_latency = bool(getattr(config, "TTS_LOG_LATENCY", False))
+
         datas = {
             "text": prompt,                   # str.(required) text to be synthesized
             "text_lang": prompt_lang,               # str.(required) language of the text to be synthesized
@@ -56,23 +82,33 @@ class tts_handler:
             "top_p": 1,                   # float. top p sampling
             "temperature": 1,             # float. temperature for sampling
             "text_split_method": "cut0",  # str. text split method, see text_segmentation_method.py for details.
-            "batch_size": 32,              # int. batch size for inference
+            "batch_size": batch_size,      # int. batch size for inference
             "batch_threshold": 0.75,      # float. threshold for batch splitting.
             "split_bucket": True,         # bool. whether to split the batch into multiple buckets.
-            "speed_factor":1.2,           # float. control the speed of the synthesized audio.
-            "streaming_mode": False,      # bool. whether to return a streaming response.
+            "speed_factor": speed_factor, # float. control the speed of the synthesized audio.
+            "streaming_mode": streaming_mode,  # bool. whether to return a streaming response.
             "seed": -1,                   # int. random seed for reproducibility.
-            "parallel_infer": True,       # bool. whether to use parallel inference.
+            "parallel_infer": parallel_infer,  # bool. whether to use parallel inference.
             "repetition_penalty": 1.35,   # float. repetition penalty for T2S model.
-            "sample_steps": 32,           # int. number of sampling steps for VITS model V3.
+            "sample_steps": sample_steps, # int. number of sampling steps for VITS model V3.
             "super_sampling": False       # bool. whether to use super-sampling for audio when using VITS model V3.
         }
         
         try:
             session = await self._get_session()
+            t0 = time.perf_counter()
             async with session.post(self.server_url, json=datas) as response:
                 if response.status == 200:
-                    return await response.read()
+                    wav_bytes = await response.read()
+                    if log_latency and wav_bytes:
+                        dt = time.perf_counter() - t0
+                        dur = _wav_duration_seconds(wav_bytes)
+                        rtf = (dt / dur) if dur > 0 else 0.0
+                        logger.info(
+                            f"TTS latency={dt:.2f}s audio={dur:.2f}s rtf={rtf:.2f} "
+                            f"chars={len(prompt or '')} steps={sample_steps} bs={batch_size} speed={speed_factor}"
+                        )
+                    return wav_bytes
                 else:
                     print(f"TTS Error: {response.status} - {await response.text()}")
                     return None

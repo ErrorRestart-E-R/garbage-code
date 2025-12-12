@@ -14,6 +14,7 @@ import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
 from typing import List, Dict, Optional
 from logger import setup_logger
+import re
 
 logger = setup_logger(__name__, config.LOG_FILE, config.LOG_LEVEL)
 
@@ -71,6 +72,37 @@ class MemoryManager:
             logger.error(f"Mem0 initialization failed: {e}")
             self.memory = None
             self.enabled = False
+
+    def should_save_memory(self, text: str) -> bool:
+        """
+        Heuristic filter to reduce memory pollution + avoid unnecessary fact-extraction calls.
+        We only attempt to save when the message is likely to contain durable personal facts.
+        """
+        if not text or not text.strip():
+            return False
+
+        t = text.strip()
+
+        # Normalize whitespace for pattern checks
+        compact = re.sub(r"\s+", "", t)
+
+        # Strong signals (allow optional spaces between syllables)
+        if re.search(r"생\s*일", t):
+            return True
+        if re.search(r"기\s*념\s*일", t):
+            return True
+        if re.search(r"내\s*이\s*름", t) or "이름은" in compact:
+            return True
+        if re.search(r"(좋아|싫어|선호|취향)", t):
+            return True
+        if re.search(r"(알레르기|못먹어|안먹어)", t):
+            return True
+        if re.search(r"(목표|계획|예정|할거야|하려고)", t):
+            return True
+        if re.search(r"(사는곳|살아|거주|직업|회사|학교)", t):
+            return True
+
+        return False
 
     def save_memory(self, user_name: str, text: str) -> Optional[Dict]:
         """
