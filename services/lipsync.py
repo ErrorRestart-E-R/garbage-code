@@ -4,7 +4,6 @@ import math
 import wave
 from dataclasses import dataclass
 from typing import Optional
-import threading
 
 import numpy as np
 
@@ -122,95 +121,4 @@ class VTSAudioLipSync:
         except Exception as e:
             logger.error(f"VTS lipsync error: {e}")
 
-
-class VTSPCMLipSync:
-    """
-    Real-time lipsync from PCM frames (s16le, typically 48kHz stereo from discord.py audio pipeline).
-
-    This works for both non-streaming and streaming TTS because it reads what is actually being played.
-    """
-
-    def __init__(self, vts_client, cfg: LipSyncConfig, channels: int = 2):
-        self.vts = vts_client
-        self.cfg = cfg
-        self.channels = max(1, int(channels))
-        self._task: Optional[asyncio.Task] = None
-        self._lock = threading.Lock()
-        self._latest_pcm: bytes = b""
-
-    def is_running(self) -> bool:
-        return self._task is not None and not self._task.done()
-
-    def feed_pcm(self, pcm_bytes: bytes) -> None:
-        # Called from audio thread. Must be fast + thread-safe.
-        if not pcm_bytes:
-            return
-        with self._lock:
-            self._latest_pcm = pcm_bytes
-
-    async def start(self) -> None:
-        if not self.vts:
-            return
-        await self.stop()
-        self._task = asyncio.create_task(self._run())
-
-    async def stop(self) -> None:
-        if self._task and not self._task.done():
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-        self._task = None
-
-        # Close mouth best-effort
-        try:
-            if self.vts and self.vts.connected:
-                await self.vts.inject_parameter(self.cfg.parameter_id, 0.0)
-        except Exception:
-            pass
-
-    async def _run(self) -> None:
-        try:
-            ok = await self.vts.ensure_authenticated() if self.vts else False
-            if not ok:
-                logger.warning(
-                    "VTS not authenticated. Allow the token request popup in VTS (token will be saved to the token file) to enable lipsync."
-                )
-                return
-
-            hz = max(5.0, float(self.cfg.update_hz))
-            alpha = max(0.0, min(1.0, 1.0 - float(self.cfg.smoothing)))
-            ema = 0.0
-
-            while True:
-                with self._lock:
-                    pcm = self._latest_pcm
-
-                if pcm:
-                    audio = np.frombuffer(pcm, dtype=np.int16)
-                    if self.channels > 1 and audio.size % self.channels == 0:
-                        audio = audio.reshape(-1, self.channels).mean(axis=1).astype(np.int16)
-                    audio_f = audio.astype(np.float32) / 32768.0
-                    rms = float(math.sqrt(float(np.mean(audio_f * audio_f)) + 1e-12))
-                else:
-                    rms = 0.0
-
-                val = rms * float(self.cfg.gain)
-                val = max(float(self.cfg.vmin), min(float(self.cfg.vmax), val))
-                ema = (1.0 - alpha) * ema + alpha * val
-
-                await self.vts.inject_parameter(self.cfg.parameter_id, float(ema))
-                await asyncio.sleep(1.0 / hz)
-
-        except asyncio.CancelledError:
-            # On cancel, close mouth quickly
-            try:
-                if self.vts and self.vts.connected:
-                    await self.vts.inject_parameter(self.cfg.parameter_id, 0.0)
-            except Exception:
-                pass
-            raise
-        except Exception as e:
-            logger.error(f"VTS PCM lipsync error: {e}")
 

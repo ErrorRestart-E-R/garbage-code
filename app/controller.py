@@ -13,10 +13,10 @@ from logger import setup_logger
 from memory_manager import MemoryManager
 from conversation_history import ConversationHistory
 from llm_interface import get_response_stream
-from audio_utils import AudioPlayer, BlockingByteStream, QueuedAudio
+from audio_utils import AudioPlayer
 from tts_handler import tts_handler
 from vts_backend import build_vts_client
-from services.lipsync import VTSAudioLipSync, VTSPCMLipSync, LipSyncConfig
+from services.lipsync import VTSAudioLipSync, LipSyncConfig
 
 
 logger = setup_logger(__name__, config.LOG_FILE, config.LOG_LEVEL)
@@ -58,8 +58,7 @@ class ConversationController:
 
         # VTube Studio (optional)
         self.vts = None
-        self.lipsync_wav: Optional[VTSAudioLipSync] = None
-        self.lipsync_pcm: Optional[VTSPCMLipSync] = None
+        self.lipsync: Optional[VTSAudioLipSync] = None
         if getattr(config, "VTS_ENABLED", False):
             self.vts = build_vts_client()
             cfg = LipSyncConfig(
@@ -70,12 +69,7 @@ class ConversationController:
                 vmin=config.VTS_LIPSYNC_MIN,
                 vmax=config.VTS_LIPSYNC_MAX,
             )
-
-            # Streaming TTS needs real-time lipsync; use PCM-based mode when streaming is enabled.
-            if bool(getattr(config, "TTS_STREAMING_MODE", False)):
-                self.lipsync_pcm = VTSPCMLipSync(self.vts, cfg, channels=2)
-            else:
-                self.lipsync_wav = VTSAudioLipSync(self.vts, cfg)
+            self.lipsync = VTSAudioLipSync(self.vts, cfg)
 
         # Queues
         self.response_queue: asyncio.Queue[Tuple[PendingResponse, int]] = asyncio.Queue()
@@ -336,7 +330,6 @@ class ConversationController:
             self.bot.loop,
             on_audio_start=self._on_tts_audio_start,
             on_audio_end=self._on_tts_audio_end,
-            on_pcm=(self.lipsync_pcm.feed_pcm if self.lipsync_pcm else None),
         )
 
         # memory context from last user chunk
@@ -486,71 +479,30 @@ class ConversationController:
         return full_response
 
     async def _tts_worker(self, tts_queue: asyncio.Queue, player: AudioPlayer):
-        # In streaming mode, limit concurrent TTS HTTP streams to avoid overloading the server/GPU.
-        stream_max = int(getattr(config, "TTS_STREAM_MAX_INFLIGHT", 1))
-        if stream_max < 1:
-            stream_max = 1
-        stream_sem = asyncio.Semaphore(stream_max)
-
         while True:
             text = await tts_queue.get()
             if text is None:
                 break
+
+            # Defensive: ensure valid string for TTS server schema
+            if not isinstance(text, str):
+                continue
+            text = text.strip()
+            if not text:
+                continue
             try:
-                if bool(getattr(config, "TTS_STREAMING_MODE", False)):
-                    await stream_sem.acquire()
-                    # Stream TTS audio directly into ffmpeg stdin
-                    stream = BlockingByteStream()
-                    loop = self.bot.loop
-
-                    async def _run_stream():
-                        try:
-                            await self.tts.stream_to(text, config.TTS_LANG, stream)
-                        finally:
-                            try:
-                                stream_sem.release()
-                            except Exception:
-                                pass
-
-                    task = asyncio.create_task(_run_stream())
-
-                    def _cleanup():
-                        # Called from audio thread; schedule task cancel on loop
-                        try:
-                            loop.call_soon_threadsafe(task.cancel)
-                        except Exception:
-                            pass
-                        try:
-                            stream.end()
-                        except Exception:
-                            pass
-
-                    await player.add_audio(QueuedAudio(input=stream, cleanup=_cleanup, start_payload=None))
-                else:
-                    wav_data = await self.tts.get_async(text, config.TTS_LANG)
-                    if wav_data:
-                        await player.add_audio(wav_data)
+                wav_data = await self.tts.get_async(text, config.TTS_LANG)
+                if wav_data:
+                    await player.add_audio(wav_data)
             except Exception as e:
                 logger.error(f"TTS error: {e}")
-                # Fallback: if streaming failed early, try non-streaming once
-                if bool(getattr(config, "TTS_STREAMING_MODE", False)):
-                    try:
-                        wav_data = await self.tts.get_async(text, config.TTS_LANG)
-                        if wav_data:
-                            await player.add_audio(wav_data)
-                    except Exception as e2:
-                        logger.error(f"TTS fallback error: {e2}")
 
-    async def _on_tts_audio_start(self, wav_bytes: Optional[bytes]):
-        if self.lipsync_pcm:
-            await self.lipsync_pcm.start()
-        elif self.lipsync_wav and wav_bytes:
-            await self.lipsync_wav.start(wav_bytes)
+    async def _on_tts_audio_start(self, wav_bytes: bytes):
+        if self.lipsync:
+            await self.lipsync.start(wav_bytes)
 
     async def _on_tts_audio_end(self):
-        if self.lipsync_pcm:
-            await self.lipsync_pcm.stop()
-        if self.lipsync_wav:
-            await self.lipsync_wav.stop()
+        if self.lipsync:
+            await self.lipsync.stop()
 
 
