@@ -13,11 +13,84 @@ from openai import AsyncOpenAI
 import config
 import json
 import mcp_library
+import re
 from typing import Tuple, AsyncGenerator, List, Dict, Optional
 from logger import setup_logger
 
 # Setup logger
 logger = setup_logger(__name__, config.LOG_FILE, config.LOG_LEVEL)
+
+
+def _extract_last_user_text(messages: List[Dict[str, str]]) -> str:
+    """
+    Extract the most recent user utterance text (without 'SpeakerName: ' prefix).
+
+    messages: OpenAI messages format list (system excluded here).
+    """
+    for msg in reversed(messages or []):
+        if (msg.get("role") or "") != "user":
+            continue
+        content = (msg.get("content") or "").strip()
+        if not content:
+            return ""
+
+        # Consecutive user messages can be merged with newlines; use the last line as "latest utterance"
+        lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
+        last_line = lines[-1] if lines else content
+
+        # Strip "SpeakerName: " prefix if present
+        if ": " in last_line:
+            _, last_line = last_line.split(": ", 1)
+        return last_line.strip()
+
+    return ""
+
+
+def _should_enable_llm_tools(messages: List[Dict[str, str]]) -> bool:
+    """
+    Safety gate: only enable LLM tool-calling when the user explicitly asks for
+    time/date, weather, or a calculation.
+
+    This prevents accidental tool calls (and leaking tool traces into TTS).
+    """
+    if not getattr(config, "ENABLE_MCP_TOOLS", False):
+        return False
+
+    text = _extract_last_user_text(messages)
+    if not text:
+        return False
+
+    compact = re.sub(r"\s+", "", text)
+
+    # Weather: require explicit '날씨'
+    if "날씨" in text:
+        return True
+
+    # Time/date keywords
+    if any(
+        k in compact
+        for k in (
+            "현재시간",
+            "지금시간",
+            "현재시각",
+            "지금시각",
+            "지금몇시",
+            "몇시야",
+            "몇시냐",
+            "시간알려줘",
+            "오늘날짜",
+            "오늘며칠",
+            "오늘몇일",
+            "날짜알려줘",
+        )
+    ):
+        return True
+
+    # Basic math expression
+    if re.fullmatch(r"[0-9+\-*/(). ]+", text) and any(op in text for op in ("+", "*", "/")):
+        return True
+
+    return False
 
 
 async def get_response_stream(
@@ -45,7 +118,7 @@ async def get_response_stream(
     try:
         # OpenAI Python SDK 권장: 단일 클라이언트로 요청 (base_url로 OpenAI-compatible 서버 사용)
         client = AsyncOpenAI(base_url=config.LLAMA_CPP_BASE_URL, api_key=config.LLAMA_CPP_API_KEY)
-        tools = mcp_library.get_tools() if config.ENABLE_MCP_TOOLS else None
+        tools = mcp_library.get_tools() if _should_enable_llm_tools(messages) else None
         
         # Build system prompt with participant count context
         system_content = config.SYSTEM_PROMPT.format(
@@ -136,7 +209,8 @@ async def get_response_stream(
             # Inject tool results into the system message (single system message only)
             system_with_tools = system_content
             if tool_lines:
-                system_with_tools += "\n\n[TOOL RESULTS]\n" + "\n".join(tool_lines)
+                # Internal-only: tool results must NOT be repeated in assistant output
+                system_with_tools += "\n\n<tool_results>\n" + "\n".join(tool_lines) + "\n</tool_results>"
 
             # Re-run generation WITHOUT adding tool-role messages to keep strict alternation
             messages_with_tools = [{"role": "system", "content": system_with_tools}] + messages

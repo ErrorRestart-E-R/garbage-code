@@ -147,7 +147,7 @@ class MemoryManager:
                 query_text,
                 user_id=user_name,
                 limit=limit,
-                rerank=False  # LLM reranking 비활성화 - 임베딩만 사용
+                rerank=False
             )
             
             memories = []

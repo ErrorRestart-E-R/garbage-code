@@ -112,7 +112,7 @@ VTS_LIPSYNC_MAX = 1.0
 # ============================================================================
 ENABLE_MEMORY = True  # 메모리 시스템 활성화/비활성화
 MEMORY_DB_PATH = "./memory_db"
-MEMORY_LLM_MODEL = "ingu627/exaone4.0:1.2b"
+MEMORY_LLM_MODEL = "granite3.3:2b"
 MEMORY_EMBEDDING_MODEL = "embeddinggemma:latest"
 OLLAMA_BASE_URL = "http://localhost:11434"
 
@@ -129,7 +129,7 @@ MEM0_CONFIG = {
         "provider": "ollama",
         "config": {
             "model": MEMORY_LLM_MODEL,
-            "temperature": 1.0,
+            "temperature": 0.5,
             "max_tokens": 512,
             "ollama_base_url": OLLAMA_BASE_URL,
         },
@@ -182,7 +182,7 @@ JSON 규칙(중요):
 # 8. STT (Speech-to-Text) 설정
 # ============================================================================
 # 모델 설정
-STT_MODEL_ID = "openai/whisper-large-v3"
+STT_MODEL_ID = "Systran/faster-whisper-large-v3"
 STT_DEVICE = "cuda"           # 옵션: "cuda", "cpu"
 STT_COMPUTE_TYPE = "float16"  # 옵션: "float16", "int8", "float32", "int8_float16"
 STT_LANGUAGE = "ko"            # Whisper 지원 언어 코드
@@ -261,6 +261,7 @@ TTS_BATCH_SIZE = 16
 TTS_SPEED_FACTOR = 1.2
 TTS_PARALLEL_INFER = True
 TTS_STREAMING_MODE = False
+TTS_STREAM_HTTP_CHUNK_SIZE_BYTES = 16384
 
 # 성능 계측(느릴 때 원인 파악용). True면 TTS 응답당 latency/RTF를 로그로 찍습니다.
 TTS_LOG_LATENCY = True
@@ -316,7 +317,9 @@ SYSTEM_PROMPT = """# CONTEXT
 # TOOLS (MCP)
 - You have access to tools: get_current_time, get_weather, calculate.
 - Only use these tools when the user explicitly asks for current time/date, weather, or a calculation.
-- Never guess time/date/weather. If tool results are present as [TOOL RESULTS] in the system message, treat them as authoritative.
+- Never guess time/date/weather.
+- If internal tool results are present in <tool_results>...</tool_results>, use them as the factual source.
+- NEVER output or quote <tool_results> or any tool-call details in your reply. Do not show tool traces.
 
 # OUTPUT
 - Answer in Korean.

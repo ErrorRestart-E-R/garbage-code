@@ -5,6 +5,7 @@ import io
 import time
 import wave
 from logger import setup_logger
+from typing import Optional
 
 logger = setup_logger(__name__, config.LOG_FILE, config.LOG_LEVEL)
 
@@ -115,6 +116,84 @@ class tts_handler:
         except Exception as e:
             print(f"TTS Connection Error: {e}")
             return None
+
+    async def stream_to(self, prompt: str, prompt_lang: str, stream) -> None:
+        """
+        Stream TTS audio bytes into a BlockingByteStream-like sink.
+        The sink must provide .feed(bytes) and .end().
+        """
+        # Pull knobs from config (safe defaults if missing)
+        sample_steps = int(getattr(config, "TTS_SAMPLE_STEPS", 32))
+        batch_size = int(getattr(config, "TTS_BATCH_SIZE", 32))
+        speed_factor = float(getattr(config, "TTS_SPEED_FACTOR", 1.2))
+        parallel_infer = bool(getattr(config, "TTS_PARALLEL_INFER", True))
+        log_latency = bool(getattr(config, "TTS_LOG_LATENCY", False))
+
+        chunk_size = int(getattr(config, "TTS_STREAM_HTTP_CHUNK_SIZE_BYTES", 16384))
+
+        datas = {
+            "text": prompt,
+            "text_lang": prompt_lang,
+            "ref_audio_path": self.reference_file,
+            "aux_ref_audio_paths": [],
+            "prompt_text": self.reference_prompt,
+            "prompt_lang": self.reference_prompt_lang,
+            "top_k": 5,
+            "top_p": 1,
+            "temperature": 1,
+            "text_split_method": "cut0",
+            "batch_size": batch_size,
+            "batch_threshold": 0.75,
+            "split_bucket": True,
+            "speed_factor": speed_factor,
+            # Force streaming for this path
+            "streaming_mode": True,
+            "seed": -1,
+            "parallel_infer": parallel_infer,
+            "repetition_penalty": 1.35,
+            "sample_steps": sample_steps,
+            "super_sampling": False,
+        }
+
+        session = await self._get_session()
+        t0 = time.perf_counter()
+        first_chunk_dt: Optional[float] = None
+
+        try:
+            async with session.post(self.server_url, json=datas) as response:
+                if response.status != 200:
+                    try:
+                        body = await response.text()
+                    except Exception:
+                        body = ""
+                    raise RuntimeError(f"TTS stream error: {response.status} {body}")
+
+                async for chunk in response.content.iter_chunked(chunk_size):
+                    if not chunk:
+                        continue
+                    if first_chunk_dt is None:
+                        first_chunk_dt = time.perf_counter() - t0
+                    stream.feed(chunk)
+
+        except asyncio.CancelledError:
+            # Allow cancellation (e.g., playback stopped)
+            raise
+        except Exception as e:
+            logger.error(f"TTS streaming error: {e}")
+        finally:
+            try:
+                stream.end()
+            except Exception:
+                pass
+
+            if log_latency:
+                dt = time.perf_counter() - t0
+                if first_chunk_dt is None:
+                    first_chunk_dt = dt
+                logger.info(
+                    f"TTS stream total={dt:.2f}s first_chunk={first_chunk_dt:.2f}s "
+                    f"chars={len(prompt or '')} steps={sample_steps} bs={batch_size} speed={speed_factor}"
+                )
 
 if __name__ == "__main__":
     # Test code needs to be async now
