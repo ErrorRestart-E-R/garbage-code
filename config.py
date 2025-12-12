@@ -158,7 +158,7 @@ MEM0_CONFIG = {
 # 8. STT (Speech-to-Text) 설정
 # ============================================================================
 # 모델 설정
-STT_MODEL_ID = "Systran/faster-whisper-large-v3" #faster-whisper-large-v3-turbo-korean
+STT_MODEL_ID = "ghost613/faster-whisper-large-v3-turbo-korean"
 STT_DEVICE = "cuda"           # 옵션: "cuda", "cpu"
 STT_COMPUTE_TYPE = "float16"  # 옵션: "float16", "int8", "float32", "int8_float16"
 STT_LANGUAGE = "ko"            # Whisper 지원 언어 코드
