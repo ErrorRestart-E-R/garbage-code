@@ -20,7 +20,10 @@ from app.controller import ConversationController
 logger = setup_logger(__name__, config.LOG_FILE, config.LOG_LEVEL)
 
 # Suppress verbose logs
+logging.getLogger("discord").setLevel(logging.WARNING)
 logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.WARNING)
+logging.getLogger("discord.ext.voice_recv.gateway").setLevel(logging.WARNING)
+logging.getLogger("discord.ext.voice_recv.opus").setLevel(logging.ERROR)
 logging.getLogger("discord.player").setLevel(logging.WARNING)
 
 class BotRuntime:

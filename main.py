@@ -7,6 +7,7 @@ AI VTuber Discord Bot (entrypoint)
 - VTS lipsync service: services/lipsync.py
 """
 
+import warnings
 import sys
 import config
 from app.bot import run_bot
@@ -23,4 +24,16 @@ if __name__ == "__main__":
     else:
         print("[WARN] Pre-flight checks skipped (set ENABLE_PREFLIGHT_CHECKS=True in config.py to enable)\n")
     
+    # Reduce noisy library warnings in console (keep errors visible)
+    warnings.filterwarnings(
+        "ignore",
+        message=r"parameter 'timeout' of type 'float' is deprecated.*",
+        category=DeprecationWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message=r"pkg_resources is deprecated as an API.*",
+        category=UserWarning,
+    )
+
     run_bot()

@@ -21,6 +21,40 @@ from logger import setup_logger
 logger = setup_logger(__name__, config.LOG_FILE, config.LOG_LEVEL)
 
 
+def _normalize_messages_for_llama(messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """
+    llama.cpp (some chat templates, e.g. Gemma3) requires strict alternation:
+    user / assistant / user / assistant ...
+
+    We defensively normalize:
+    - keep only roles: user, assistant
+    - drop empty content
+    - merge consecutive same-role messages (join with newline)
+    - ensure the first message is user (drop leading assistant blocks if any)
+    """
+    normalized: List[Dict[str, str]] = []
+
+    for msg in messages or []:
+        role = (msg.get("role") or "").strip()
+        if role not in ("user", "assistant"):
+            continue
+
+        content = (msg.get("content") or "").strip()
+        if not content:
+            continue
+
+        if normalized and normalized[-1]["role"] == role:
+            normalized[-1]["content"] += "\n" + content
+        else:
+            normalized.append({"role": role, "content": content})
+
+    # Ensure conversation starts with a user message
+    while normalized and normalized[0]["role"] != "user":
+        normalized.pop(0)
+
+    return normalized
+
+
 def _extract_last_user_text(messages: List[Dict[str, str]]) -> str:
     """
     Extract the most recent user utterance text (without 'SpeakerName: ' prefix).
@@ -130,8 +164,10 @@ async def get_response_stream(
         if memory_context:
             system_content += f"\n\n[LONG-TERM MEMORY]\n{memory_context}"
         
+        normalized_messages = _normalize_messages_for_llama(messages)
+
         # Build final messages list: system + conversation history
-        final_messages = [{"role": "system", "content": system_content}] + messages
+        final_messages = [{"role": "system", "content": system_content}] + normalized_messages
         
         logger.debug(f"LLM request: {len(messages)} messages, {participant_count} participants")
         
@@ -213,7 +249,7 @@ async def get_response_stream(
                 system_with_tools += "\n\n<tool_results>\n" + "\n".join(tool_lines) + "\n</tool_results>"
 
             # Re-run generation WITHOUT adding tool-role messages to keep strict alternation
-            messages_with_tools = [{"role": "system", "content": system_with_tools}] + messages
+            messages_with_tools = [{"role": "system", "content": system_with_tools}] + normalized_messages
 
             stream = await client.chat.completions.create(
                 model=config.LLM_MODEL_NAME,

@@ -1,3 +1,4 @@
+import warnings
 import time
 import queue
 import numpy as np
@@ -5,6 +6,14 @@ from logger import setup_logger
 import os
 import config
 logger = setup_logger(__name__, config.LOG_FILE, config.LOG_LEVEL)
+
+# Reduce noisy library warnings in STT subprocess console
+warnings.filterwarnings(
+    "ignore",
+    message=r"pkg_resources is deprecated as an API.*",
+    category=UserWarning,
+)
+
 def run_stt_process(audio_queue, result_queue, command_queue, status_queue=None):
     """
     Standalone process for Speech-to-Text.
