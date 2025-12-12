@@ -9,6 +9,41 @@ class tts_handler:
         self.reference_prompt = reference_prompt
         self.reference_prompt_lang = reference_prompt_lang
 
+        # aiohttp 권장: 세션을 재사용해서 커넥션 풀/keep-alive 활용
+        self._session: aiohttp.ClientSession | None = None
+        self._session_lock = asyncio.Lock()
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self._session and not self._session.closed:
+            return self._session
+
+        async with self._session_lock:
+            if self._session and not self._session.closed:
+                return self._session
+
+            timeout = aiohttp.ClientTimeout(
+                total=float(getattr(config, "TTS_HTTP_TIMEOUT_TOTAL_SECONDS", 120.0)),
+                connect=float(getattr(config, "TTS_HTTP_TIMEOUT_CONNECT_SECONDS", 10.0)),
+                sock_read=float(getattr(config, "TTS_HTTP_TIMEOUT_SOCK_READ_SECONDS", 120.0)),
+            )
+            connector = aiohttp.TCPConnector(
+                limit=int(getattr(config, "TTS_HTTP_MAX_CONNECTIONS", 10)),
+                ttl_dns_cache=300,
+                enable_cleanup_closed=True,
+            )
+            self._session = aiohttp.ClientSession(timeout=timeout, connector=connector)
+            return self._session
+
+    async def close(self) -> None:
+        """
+        세션 종료(권장).
+        - 현재 봇 종료 흐름에서는 프로세스 종료로 정리되기도 하지만,
+          장기적으로는 shutdown 훅에서 호출하는 것이 좋습니다.
+        """
+        if self._session and not self._session.closed:
+            await self._session.close()
+        self._session = None
+
     async def get_async(self, prompt, prompt_lang):
         datas = {
             "text": prompt,                   # str.(required) text to be synthesized
@@ -34,13 +69,13 @@ class tts_handler:
         }
         
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(self.server_url, json=datas) as response:
-                    if response.status == 200:
-                        return await response.read()
-                    else:
-                        print(f"TTS Error: {response.status} - {await response.text()}")
-                        return None
+            session = await self._get_session()
+            async with session.post(self.server_url, json=datas) as response:
+                if response.status == 200:
+                    return await response.read()
+                else:
+                    print(f"TTS Error: {response.status} - {await response.text()}")
+                    return None
         except Exception as e:
             print(f"TTS Connection Error: {e}")
             return None

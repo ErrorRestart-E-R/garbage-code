@@ -49,16 +49,16 @@ LLM_MODEL_NAME = "default"  # llama.cpp는 이미 로드된 모델 사용 (이�
 # ============================================================================
 # 5. LLM 응답 생성 파라미터
 # ============================================================================
-LLM_RESPONSE_TEMPERATURE = 0.5      # 창의성 (0.0=결정적, 1.0=창의적)
-#LLM_RESPONSE_TOP_P = 0.92           # 누적 확률 샘플링
-#LLM_RESPONSE_TOP_K = 40             # 상위 K개 토큰만 샘플링
-#LLM_RESPONSE_REPEAT_PENALTY = 1.05  # 반복 페널티 (1.0=없음)
+LLM_RESPONSE_TEMPERATURE = 1.0      # 창의성 (0.0=결정적, 1.0=창의적)
+LLM_RESPONSE_TOP_P = 0.95           # 누적 확률 샘플링
+LLM_RESPONSE_TOP_K = 40             # 상위 K개 토큰만 샘플링
+LLM_RESPONSE_REPEAT_PENALTY = 1.05  # 반복 페널티 (1.0=없음)
 
 # ============================================================================
 # 6. 대화 흐름 제어
 # ============================================================================
 # 대화 기록
-MAX_CONVERSATION_HISTORY = 10  # 유지할 최대 메시지 수
+MAX_CONVERSATION_HISTORY = 20  # 유지할 최대 메시지 수
 
 # 응답 제어
 MIN_RESPONSE_INTERVAL = 0             # 응답 간 최소 간격 (초)
@@ -114,8 +114,12 @@ ENABLE_MEMORY = True  # 메모리 시스템 활성화/비활성화
 MEMORY_DB_PATH = "./memory_db"
 MEMORY_LLM_MODEL = "exaone3.5:2.4b"
 MEMORY_EMBEDDING_MODEL = "embeddinggemma:latest"
+# Mem0(Ollama) 서버 주소 (문서 권장: config에 명시해서 환경 의존성 감소)
+OLLAMA_BASE_URL = "http://localhost:11434"
 
 MEM0_CONFIG = {
+    # Mem0 문서 예시에서 사용하는 설정 버전 키(선택이지만 명시하면 호환성에 유리)
+    "version": "v1.1",
     "vector_store": {
         "provider": "chroma",
         "config": {
@@ -129,12 +133,14 @@ MEM0_CONFIG = {
             "model": MEMORY_LLM_MODEL,
             "temperature": 0,
             "max_tokens": 512,
+            "ollama_base_url": OLLAMA_BASE_URL,
         },
     },
     "embedder": {
         "provider": "ollama",
         "config": {
             "model": MEMORY_EMBEDDING_MODEL,
+            "ollama_base_url": OLLAMA_BASE_URL,
         },
     },
     "custom_fact_extraction_prompt": """
@@ -229,6 +235,12 @@ TTS_SERVER_URL = "http://192.168.45.181:9880/tts"
 TTS_VOLUME = 0.25  # 출력 볼륨 (0.0 ~ 2.0, 1.0 = 100%)
 TTS_LANG = "ko"    # 출력 언어
 
+# TTS HTTP 클라이언트 설정 (aiohttp 권장 패턴: ClientSession 재사용 + timeout 지정)
+TTS_HTTP_TIMEOUT_TOTAL_SECONDS = 120.0
+TTS_HTTP_TIMEOUT_CONNECT_SECONDS = 10.0
+TTS_HTTP_TIMEOUT_SOCK_READ_SECONDS = 120.0
+TTS_HTTP_MAX_CONNECTIONS = 10
+
 # 레퍼런스 음성 (음색 복제용)
 TTS_REFERENCE_FILE = "reference.wav"
 TTS_REFERENCE_PROMPT = "どっちも彼女さ。毎回聞かれるたびに、適当に思いついた通り名を名乗ってたんだ…"
@@ -279,7 +291,7 @@ Before responding, analyze the conversation:
 # RESPONSE DECISION
 
 ## DEFINITELY RESPOND when:
-- Someone calls you: "{ai_name}", "AI", "야", "너"
+- You are addressed directly (your name is mentioned, the message is clearly directed at you, or you're explicitly asked something)
 - Direct question to you
 - Reply to your previous message
 - 1:1 conversation (almost always respond)
@@ -287,13 +299,13 @@ Before responding, analyze the conversation:
 
 ## DEFINITELY STAY SILENT when:
 - Humans talking to each other (side conversation)
-- Someone calls another person: "철수야", "민수 뭐해"
-- Pure reactions: "ㅋㅋ", "ㅎㅎ", "헐", "ㄹㅇ", "ㄱㄱ"
-- Self-talk: "아 배고프다", "화장실 갔다올게"
+- Another person is being addressed (not you)
+- Short reaction-only messages that do not ask anything or need a reply
+- Self-talk or announcements not directed at you
 - Interrupting would be rude
 
 ## USE JUDGMENT for:
-- Group questions: "다들 뭐해?" → You may join if natural
+- Group questions to everyone → You may join if natural
 - Open discussions → Join if you have something valuable
 - Awkward silences → You might break the ice
 
@@ -312,7 +324,7 @@ Before responding, analyze the conversation:
 **Topic Transitions:**
 - If topic is exhausted, suggest something new
 - Connect new topics to what was discussed
-- "그러고 보니...", "아 그거 말고..."
+- Use brief, natural transition phrasing without ellipses and without relying on a fixed catchphrase
 
 # PERSONALITY TRAITS
 - Witty and quick with comebacks
@@ -324,10 +336,15 @@ Before responding, analyze the conversation:
 
 # LANGUAGE STYLE
 - Natural Korean, like talking to a friend
-- Casual speech (반말) unless context suggests otherwise
-- Use natural fillers: "음...", "아~", "그니까"
-- Vary sentence endings: ~지, ~거든, ~잖아, ~네
-- NO emojis, NO English mixing unless quoting
+- Casual speech unless context suggests otherwise
+- Use natural hesitation/filler words sparingly (NO ellipses). Avoid overusing any single filler.
+- Vary sentence endings naturally and avoid repeating the same ending pattern
+- NO emojis or emoticons, NO English mixing unless quoting
+- PUNCTUATION RULES:
+  - Use punctuation only at the end of a sentence, and use at most one punctuation mark.
+  - Never use ellipses (three consecutive periods) and do not use the single-character ellipsis glyph.
+  - Never repeat punctuation marks or stack them.
+  - If you want a pause, do it with phrasing (no ellipses) and do not rely on a fixed set of filler words.
 
 # RESPONSE GUIDELINES
 - Keep responses conversational (1-3 sentences usually)

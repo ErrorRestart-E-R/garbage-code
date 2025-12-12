@@ -43,10 +43,8 @@ async def get_response_stream(
         Response text chunks (empty if LLM decides not to respond)
     """
     try:
-        client = AsyncOpenAI(
-            base_url=config.LLAMA_CPP_BASE_URL,
-            api_key=config.LLAMA_CPP_API_KEY
-        )
+        # OpenAI Python SDK 권장: 단일 클라이언트로 요청 (base_url로 OpenAI-compatible 서버 사용)
+        client = AsyncOpenAI(base_url=config.LLAMA_CPP_BASE_URL, api_key=config.LLAMA_CPP_API_KEY)
         tools = mcp_library.get_tools() if config.ENABLE_MCP_TOOLS else None
         
         # Build system prompt with participant count context
@@ -70,16 +68,16 @@ async def get_response_stream(
             "messages": final_messages,
             "stream": True,
             "temperature": config.LLM_RESPONSE_TEMPERATURE,
-            #"top_p": config.LLM_RESPONSE_TOP_P,
+            "top_p": config.LLM_RESPONSE_TOP_P,
             "extra_body": {
-                #"top_k": config.LLM_RESPONSE_TOP_K,
-                #"repeat_penalty": config.LLM_RESPONSE_REPEAT_PENALTY,
+                "top_k": config.LLM_RESPONSE_TOP_K,
+                "repeat_penalty": config.LLM_RESPONSE_REPEAT_PENALTY,
             }
         }
         if tools:
             chat_kwargs["tools"] = tools
         
-        tool_calls_accumulated = []
+        tool_calls_accumulated: list[dict] = []
         content_buffer = ""
         has_yielded = False
         
@@ -110,8 +108,8 @@ async def get_response_stream(
                     has_yielded = True
                     yield content
         
-        # Process tool calls (only if no content was yielded)
-        if tool_calls_accumulated and not has_yielded:
+        # Process tool calls (tool_calls가 존재하면 content 유무와 상관없이 실행)
+        if tool_calls_accumulated:
             for tool_call in tool_calls_accumulated:
                 func_name = tool_call["function"]["name"]
                 func_args_str = tool_call["function"]["arguments"]
@@ -128,6 +126,8 @@ async def get_response_stream(
                     
                     final_messages.append({
                         "role": "assistant",
+                        # OpenAI tool calling 규격상 tool_calls가 있으면 content는 빈 문자열/None이어도 됩니다.
+                        # (여기서는 누적된 텍스트를 함께 남겨 컨텍스트 일관성을 유지합니다.)
                         "content": content_buffer,
                         "tool_calls": [{
                             "id": tool_call["id"],
@@ -147,15 +147,16 @@ async def get_response_stream(
                 messages=final_messages,
                 stream=True,
                 temperature=config.LLM_RESPONSE_TEMPERATURE,
-                #top_p=config.LLM_RESPONSE_TOP_P,
+                top_p=config.LLM_RESPONSE_TOP_P,
                 extra_body={
-                    #"top_k": config.LLM_RESPONSE_TOP_K,
-                    #"repeat_penalty": config.LLM_RESPONSE_REPEAT_PENALTY,
+                    "top_k": config.LLM_RESPONSE_TOP_K,
+                    "repeat_penalty": config.LLM_RESPONSE_REPEAT_PENALTY,
                 }
             )
             async for chunk in stream:
                 delta = chunk.choices[0].delta if chunk.choices else None
                 if delta and delta.content:
+                    has_yielded = True
                     yield delta.content
                     
     except Exception as e:
