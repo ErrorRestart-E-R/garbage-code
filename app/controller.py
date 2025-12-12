@@ -384,32 +384,74 @@ class ConversationController:
 
         # Split only by sentence delimiters (no length-based chunking)
         tts_split_delims = list(getattr(config, "TTS_SENTENCE_DELIMITERS", ['.', '!', '?', '\n', '。']))
+        pending_prefix = ""
+
+        def _find_next_delim(buf: str) -> tuple[int, str]:
+            """
+            Find the earliest delimiter position with small heuristics:
+            - Ignore '.' right after a digit (list markers like '1.' or '2.')
+            - Ignore '.' between digits (decimals like '3.14')
+            """
+            if not buf:
+                return -1, ""
+
+            # Fast path: scan left-to-right
+            for idx, ch in enumerate(buf):
+                if ch not in tts_split_delims:
+                    continue
+
+                if ch == ".":
+                    prev = buf[idx - 1] if idx > 0 else ""
+                    nxt = buf[idx + 1] if (idx + 1) < len(buf) else ""
+                    if prev.isdigit():  # enumeration like 1.
+                        continue
+                    if nxt.isdigit():  # decimal like 3.14
+                        continue
+
+                return idx, ch
+
+            return -1, ""
 
         async def _drain_buffer_to_tts_queue(force: bool = False) -> None:
-            nonlocal buffer
+            nonlocal buffer, pending_prefix
 
             # 1) Split by sentence delimiters as soon as possible
             while True:
-                hit_idx = -1
-                hit_delim = None
-                for d in tts_split_delims:
-                    i = buffer.find(d)
-                    if i != -1 and (hit_idx == -1 or i < hit_idx):
-                        hit_idx = i
-                        hit_delim = d
-                if hit_idx == -1 or hit_delim is None:
+                hit_idx, hit_delim = _find_next_delim(buffer)
+                if hit_idx == -1 or not hit_delim:
                     break
 
                 cut = hit_idx + len(hit_delim)
                 chunk_text = (buffer[:cut]).strip()
                 buffer = buffer[cut:]
-                if chunk_text:
-                    await tts_queue.put(chunk_text)
+                if not chunk_text:
+                    continue
+
+                # If the model outputs a bare list marker on its own line ("1.", "2.") merge it with next chunk
+                if re.fullmatch(r"[。]?\s*\d+\s*[.)]\s*", chunk_text):
+                    pending_prefix = chunk_text.strip()
+                    continue
+
+                if pending_prefix:
+                    chunk_text = f"{pending_prefix} {chunk_text}".strip()
+                    pending_prefix = ""
+
+                await tts_queue.put(chunk_text)
 
             # 2) Force flush remainder (end of stream)
-            if force and buffer.strip():
-                await tts_queue.put(buffer.strip())
+            if force:
+                tail = buffer.strip()
                 buffer = ""
+
+                if tail:
+                    if pending_prefix:
+                        tail = f"{pending_prefix} {tail}".strip()
+                        pending_prefix = ""
+                    await tts_queue.put(tail)
+                elif pending_prefix:
+                    # Rare: reply ended with only "1." etc. Best-effort speak it.
+                    await tts_queue.put(pending_prefix)
+                    pending_prefix = ""
 
         tts_queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
         tts_task = asyncio.create_task(self._tts_worker(tts_queue, player))
@@ -444,16 +486,33 @@ class ConversationController:
         return full_response
 
     async def _tts_worker(self, tts_queue: asyncio.Queue, player: AudioPlayer):
+        # In streaming mode, limit concurrent TTS HTTP streams to avoid overloading the server/GPU.
+        stream_max = int(getattr(config, "TTS_STREAM_MAX_INFLIGHT", 1))
+        if stream_max < 1:
+            stream_max = 1
+        stream_sem = asyncio.Semaphore(stream_max)
+
         while True:
             text = await tts_queue.get()
             if text is None:
                 break
             try:
                 if bool(getattr(config, "TTS_STREAMING_MODE", False)):
+                    await stream_sem.acquire()
                     # Stream TTS audio directly into ffmpeg stdin
                     stream = BlockingByteStream()
                     loop = self.bot.loop
-                    task = asyncio.create_task(self.tts.stream_to(text, config.TTS_LANG, stream))
+
+                    async def _run_stream():
+                        try:
+                            await self.tts.stream_to(text, config.TTS_LANG, stream)
+                        finally:
+                            try:
+                                stream_sem.release()
+                            except Exception:
+                                pass
+
+                    task = asyncio.create_task(_run_stream())
 
                     def _cleanup():
                         # Called from audio thread; schedule task cancel on loop
