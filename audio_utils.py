@@ -177,7 +177,14 @@ class AudioPlayer:
 
         try:
             if vc and vc.is_connected() and (vc.is_playing() or vc.is_paused()):
-                vc.stop()
+                # IMPORTANT:
+                # - In discord-ext-voice-recv, VoiceRecvClient.stop() stops BOTH receiving and sending,
+                #   which triggers sink cleanup and breaks STT reception.
+                # - Use stop_playing() if available to stop playback only.
+                if hasattr(vc, "stop_playing"):
+                    vc.stop_playing()
+                else:
+                    vc.stop()
         except Exception:
             # best-effort; don't raise from interrupt
             pass
