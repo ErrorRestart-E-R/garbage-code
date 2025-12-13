@@ -114,7 +114,8 @@ ENABLE_MEMORY = True  # 메모리 시스템 활성화/비활성화
 MEMORY_DB_PATH = "./memory_db"
 MEMORY_LLM_MODEL = "granite3.3:2b"
 MEMORY_EMBEDDING_MODEL = "embeddinggemma:latest"
-OLLAMA_BASE_URL = "http://localhost:11434"
+OLLAMA_LLM_URL = "http://localhost:11434"
+OLLAMA_EMBEDDING_URL = "http://localhost:11434"
 
 MEM0_CONFIG = {
     "version": "v1.1",
@@ -131,14 +132,14 @@ MEM0_CONFIG = {
             "model": MEMORY_LLM_MODEL,
             "temperature": 0.5,
             "max_tokens": 512,
-            "ollama_base_url": OLLAMA_BASE_URL,
+            "ollama_base_url": OLLAMA_LLM_URL,
         },
     },
     "embedder": {
         "provider": "ollama",
         "config": {
             "model": MEMORY_EMBEDDING_MODEL,
-            "ollama_base_url": OLLAMA_BASE_URL,
+            "ollama_base_url": OLLAMA_EMBEDDING_URL,
         },
     },
     "custom_fact_extraction_prompt": """
