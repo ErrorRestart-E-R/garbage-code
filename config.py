@@ -115,7 +115,7 @@ MEMORY_DB_PATH = "./memory_db"
 MEMORY_LLM_MODEL = "granite3.3:2b"
 MEMORY_EMBEDDING_MODEL = "embeddinggemma:latest"
 OLLAMA_LLM_URL = "http://localhost:11434"
-OLLAMA_EMBEDDING_URL = "http://localhost:11434"
+OLLAMA_EMBEDDING_URL = "http://192.168.45.28:11434"
 
 MEM0_CONFIG = {
     "version": "v1.1",
