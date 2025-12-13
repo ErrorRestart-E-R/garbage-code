@@ -56,6 +56,14 @@ class ConversationController:
             config.TTS_REFERENCE_PROMPT_LANG,
         )
 
+        # Shared audio player (single entry point for VoiceClient.play)
+        self.audio_player = AudioPlayer(
+            voice_client_getter=self._get_voice_client,
+            loop=self.bot.loop,
+            on_audio_start=self._on_tts_audio_start,
+            on_audio_end=self._on_tts_audio_end,
+        )
+
         # VTube Studio (optional)
         self.vts = None
         self.lipsync: Optional[VTSAudioLipSync] = None
@@ -81,6 +89,10 @@ class ConversationController:
         self.last_processed_index = 0
         self.last_response_time = 0.0
 
+        # Interruption token: increments whenever we need to abort speech immediately.
+        # Any in-flight response compares its captured token against current value.
+        self._run_token: int = 0
+
         # STT Result queue (multiprocessing)
         self.result_queue: Optional[multiprocessing.Queue] = None
 
@@ -105,7 +117,7 @@ class ConversationController:
                 except queue.Empty:
                     continue
 
-                def _handle_result(r: dict):
+                async def _handle_result(r: dict):
                     user_id = r.get("user_id")
                     user_text = r.get("text", "")
 
@@ -120,7 +132,12 @@ class ConversationController:
                         self.message_counter += 1
                         logger.debug(f"History: Added message #{self.message_counter} from {user_name}")
 
-                _handle_result(result)
+                        # Interruption policy (B):
+                        # Trigger only on "{AI_NAME} 그만말해" / "{AI_NAME} 조용히해"
+                        if self._is_interrupt_command(user_text):
+                            await self._apply_interrupt()
+
+                await _handle_result(result)
 
                 # Burst drain: 이미 쌓인 결과는 즉시 처리(추가 thread get 호출 방지)
                 while True:
@@ -128,7 +145,7 @@ class ConversationController:
                         r2 = self.result_queue.get_nowait()
                     except queue.Empty:
                         break
-                    _handle_result(r2)
+                    await _handle_result(r2)
             except Exception as e:
                 logger.error(f"History worker error: {e}", exc_info=True)
                 await asyncio.sleep(0.1)
@@ -148,6 +165,14 @@ class ConversationController:
                 messages, current_speaker, current_message, current_timestamp = self.history.get_messages_for_llm()
                 if not current_speaker or not current_message:
                     await asyncio.sleep(0.1)
+                    continue
+
+                # If the latest user message is an explicit interrupt command,
+                # do not trigger LLM; just stop speaking immediately.
+                if self._is_interrupt_command(current_message):
+                    await self._apply_interrupt()
+                    self.last_processed_index = self.message_counter
+                    await asyncio.sleep(0.05)
                     continue
 
                 if time.time() - current_timestamp > config.MESSAGE_STALENESS_THRESHOLD:
@@ -187,9 +212,11 @@ class ConversationController:
                 self.is_responding = True
 
                 try:
+                    token = self._run_token
                     full_response = await self._execute_response(
                         messages=pending.history_messages,
                         participant_count=participant_count,
+                        run_token=token,
                     )
 
                     if full_response and full_response.strip():
@@ -319,18 +346,74 @@ class ConversationController:
 
         return None
 
-    async def _execute_response(self, messages: List[Dict[str, str]], participant_count: int) -> Optional[str]:
+    @staticmethod
+    def _normalize_interrupt_text(text: str) -> str:
+        """
+        Normalize to compare Korean voice commands robustly:
+        - remove whitespace
+        - drop punctuation/symbols (keep alnum + underscore + Korean)
+        """
+        if not text:
+            return ""
+        t = re.sub(r"\s+", "", str(text))
+        t = re.sub(r"[^0-9A-Za-z가-힣_]", "", t)
+        return t
+
+    def _is_interrupt_command(self, user_text: str) -> bool:
+        """
+        Policy B trigger:
+        - "{AI_NAME} 그만말해"
+        - "{AI_NAME} 조용히해"
+        (spaces/punctuation variations tolerated)
+        """
+        ai = self._normalize_interrupt_text(getattr(config, "AI_NAME", ""))
+        t = self._normalize_interrupt_text(user_text or "")
+        if not ai or not t:
+            return False
+
+        if not t.startswith(ai):
+            return False
+
+        tail = t[len(ai) :]
+        return tail in ("그만말해", "조용히해")
+
+    async def _apply_interrupt(self) -> None:
+        """
+        Stop current speech immediately and drop any queued responses.
+        """
+        # Abort any in-flight response/tss pipeline
+        self._run_token += 1
+
+        # Stop/flush audio now (policy B)
+        try:
+            await self.audio_player.interrupt()
+        except Exception:
+            pass
+
+        # Drop queued (not-yet-started) responses so we don't "resume speaking" old backlog
+        try:
+            while True:
+                self.response_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+        except Exception:
+            pass
+
+    async def _execute_response(
+        self,
+        messages: List[Dict[str, str]],
+        participant_count: int,
+        run_token: int,
+    ) -> Optional[str]:
+        if run_token != self._run_token:
+            return None
+
         vc = self._get_voice_client()
         if not vc:
             logger.warning("Not in voice channel")
             return None
 
-        player = AudioPlayer(
-            vc,
-            self.bot.loop,
-            on_audio_start=self._on_tts_audio_start,
-            on_audio_end=self._on_tts_audio_end,
-        )
+        player = self.audio_player
 
         # memory context from last user chunk
         last_user_msg = ""
@@ -358,10 +441,16 @@ class ConversationController:
             print(f"{config.AI_NAME}: {tool_shortcut}")
 
             tts_queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
-            tts_task = asyncio.create_task(self._tts_worker(tts_queue, player))
+            tts_task = asyncio.create_task(self._tts_worker(tts_queue, player, run_token))
+            if run_token != self._run_token:
+                await tts_queue.put(None)
+                await tts_task
+                return None
+
             await tts_queue.put(tool_shortcut.strip())
             await tts_queue.put(None)
             await tts_task
+            await player.drain()
             return tool_shortcut
 
         memory_context = ""
@@ -447,13 +536,15 @@ class ConversationController:
                     pending_prefix = ""
 
         tts_queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
-        tts_task = asyncio.create_task(self._tts_worker(tts_queue, player))
+        tts_task = asyncio.create_task(self._tts_worker(tts_queue, player, run_token))
 
         async for chunk in get_response_stream(
             messages=messages,
             participant_count=participant_count,
             memory_context=memory_context,
         ):
+            if run_token != self._run_token:
+                break
             if not chunk:
                 continue
 
@@ -472,17 +563,28 @@ class ConversationController:
             print()
 
         # Flush any remaining buffered text
-        await _drain_buffer_to_tts_queue(force=True)
+        if run_token == self._run_token:
+            await _drain_buffer_to_tts_queue(force=True)
 
         await tts_queue.put(None)
         await tts_task
+
+        # Important: response is not "done" until audio playback finishes.
+        await player.drain()
+
+        if run_token != self._run_token:
+            return None
         return full_response
 
-    async def _tts_worker(self, tts_queue: asyncio.Queue, player: AudioPlayer):
+    async def _tts_worker(self, tts_queue: asyncio.Queue, player: AudioPlayer, run_token: int):
         while True:
             text = await tts_queue.get()
             if text is None:
                 break
+
+            if run_token != self._run_token:
+                # Abort speaking immediately
+                continue
 
             # Defensive: ensure valid string for TTS server schema
             if not isinstance(text, str):
@@ -491,7 +593,11 @@ class ConversationController:
             if not text:
                 continue
             try:
+                if run_token != self._run_token:
+                    continue
                 wav_data = await self.tts.get_async(text, config.TTS_LANG)
+                if run_token != self._run_token:
+                    continue
                 if wav_data:
                     await player.add_audio(wav_data)
             except Exception as e:
