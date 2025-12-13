@@ -124,6 +124,14 @@ class MemoryManager:
                 user_id=user_name,
                 metadata={"source": "voice_chat"}
             )
+            # Simple completion print (requested)
+            stored = 0
+            try:
+                stored = len(result.get("results", []) or []) if isinstance(result, dict) else 0
+            except Exception:
+                stored = 0
+            print(f"[Memory] save_done user={user_name} stored={stored}")
+
             if result and result.get("results"):
                 logger.debug(f"[Memory] Saved for {user_name}: {result}")
             return result
@@ -158,7 +166,15 @@ class MemoryManager:
                         "user": user_name,
                         "score": item.get("score", 0)
                     })
-            
+
+            # Simple completion print (requested)
+            top_score = 0
+            try:
+                top_score = max((m.get("score", 0) or 0) for m in memories) if memories else 0
+            except Exception:
+                top_score = 0
+            print(f"[Memory] search_done user={user_name} hits={len(memories)} top_score={top_score}")
+
             return memories
         except Exception as e:
             logger.error(f"[Memory] Search error: {e}")
