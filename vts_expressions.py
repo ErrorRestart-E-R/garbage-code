@@ -1,11 +1,3 @@
-"""
-감정 → 표정(핫키) 트리거 스캐폴딩.
-
-요구사항:
-- 지금은 "틀"만 제공 (핫키 세부 내용은 나중에 채움)
-- 확장 가능하게: config 기반 매핑 + 안전한 no-op 동작
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass

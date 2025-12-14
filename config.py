@@ -251,7 +251,7 @@ STT_MIN_RMS_THRESHOLD = 0.01
 # 9. TTS (Text-to-Speech) 설정
 # ============================================================================
 TTS_SERVER_URL = "http://192.168.45.181:9880/tts"
-TTS_VOLUME = 0.25  # 출력 볼륨 (0.0 ~ 2.0, 1.0 = 100%)
+TTS_VOLUME = 0.25  # 출력 볼륨 
 TTS_LANG = "ko"    # 출력 언어
 
 # TTS 합성(서버 추론) 파라미터
@@ -270,7 +270,7 @@ TTS_HTTP_MAX_CONNECTIONS = 10
 
 # 레퍼런스 음성
 TTS_REFERENCE_FILE = "reference.wav"
-TTS_REFERENCE_PROMPT = "どっちも彼女さ。毎回聞かれるたびに、適当に思いついた通り名を名乗ってたんだ…"
+TTS_REFERENCE_PROMPT = "どっちも彼女さ。毎回聞かれるたびに、適当に思いついた通り名を名乗ってたんだ"
 TTS_REFERENCE_PROMPT_LANG = "ja"
 
 # 문장 분리 (TTS 청킹용)

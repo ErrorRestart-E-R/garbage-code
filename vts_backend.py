@@ -4,13 +4,7 @@ from vts_client import VTubeStudioClient, VTSPluginInfo
 
 
 def build_vts_client():
-    """
-    VTS client factory.
-
-    현재는 가벼운 직접 WebSocket 구현을 기본으로 사용합니다.
-    추후 VTS 기능(핫키/이벤트/아이템 등)이 커지면 pyvts 백엔드로 전환할 수 있도록
-    선택 스캐폴딩만 제공해 둡니다.
-    """
+    #VTS client factory.
     backend = getattr(config, "VTS_BACKEND", "ws")
 
     if backend == "pyvts":
