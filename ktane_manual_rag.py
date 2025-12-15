@@ -47,22 +47,23 @@ class RagResult:
 def _read_text_file(path: str) -> str:
     """
     Best-effort text file reader for Windows/Korean environments.
-    Tries UTF-8 first, then falls back to cp949.
+    Prefer UTF-8. Also supports UTF-8 BOM and UTF-16.
     """
     if not path:
         return ""
-    # normalize path for metadata; reading with original is fine
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read()
-    except UnicodeDecodeError:
+    encodings = ("utf-8-sig", "utf-8", "utf-16", "cp949")
+    for enc in encodings:
         try:
-            with open(path, "r", encoding="cp949") as f:
-                return f.read()
+            with open(path, "r", encoding=enc) as f:
+                text = f.read()
+            if text and enc not in ("utf-8-sig", "utf-8"):
+                logger.warning(f"[KTANE] manual text loaded with fallback encoding={enc}. Please save as UTF-8: {os.path.abspath(path)}")
+            return text
+        except UnicodeDecodeError:
+            continue
         except Exception:
-            return ""
-    except Exception:
-        return ""
+            continue
+    return ""
 
 
 def _split_into_paragraphs(text: str) -> List[str]:

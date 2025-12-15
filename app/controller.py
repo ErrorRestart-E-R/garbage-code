@@ -477,7 +477,32 @@ class ConversationController:
         ktane_context = ""
         if ktane_mode and self.ktane_rag and last_user_msg:
             try:
-                rag_result = await asyncio.to_thread(self.ktane_rag.query, last_user_msg)
+                # Use a slightly broader query than the last utterance only.
+                # Users often say: "키패드야" then later "람다 같은 게 있어" etc.
+                recent_user_lines: list[str] = []
+                for msg in reversed(messages or []):
+                    if (msg.get("role") or "") != "user":
+                        continue
+                    content = (msg.get("content") or "").strip()
+                    if not content:
+                        continue
+                    # take last 3 lines from merged user content
+                    for ln in reversed(content.splitlines()):
+                        ln = (ln or "").strip()
+                        if not ln:
+                            continue
+                        if ": " in ln:
+                            _, ln = ln.split(": ", 1)
+                            ln = ln.strip()
+                        if ln:
+                            recent_user_lines.append(ln)
+                        if len(recent_user_lines) >= 3:
+                            break
+                    if len(recent_user_lines) >= 3:
+                        break
+
+                rag_query_text = "\n".join(reversed(recent_user_lines)).strip() or last_user_msg
+                rag_result = await asyncio.to_thread(self.ktane_rag.query, rag_query_text)
                 ktane_context = self.ktane_rag.format_context(
                     rag_result,
                     max_chars=int(getattr(config, "KTANE_RAG_MAX_CONTEXT_CHARS", 6000)),

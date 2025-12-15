@@ -205,12 +205,16 @@ async def get_response_stream(
                     "- Never guess rules from general knowledge when KTANE mode is on.\n"
                     "- In KTANE mode, ALWAYS respond to the latest user message. Do not stay silent.\n"
                     "- In KTANE mode, NEVER output an empty response.\n"
+                    "- Users may describe things inaccurately/colloquially. Map their description to the closest term/alias found in the manual context.\n"
+                    "- If multiple candidates fit, ask a single short disambiguation question.\n"
                     "\n"
                     "[KTANE OUTPUT RULES]\n"
                     "- Do NOT explain how you found the rule.\n"
                     "- Do NOT quote or paraphrase the manual/context.\n"
                     "- Do NOT mention '매뉴얼', '문서', 'RAG', '컨텍스트' in your reply.\n"
                     "- Output only the final actionable instruction(s) the defuser must do now.\n"
+                    "- For Keypads/키패드: if you don't have all 4 symbols with positions (좌상/우상/좌하/우하), ask for them.\n"
+                    "- For Keypads/키패드 final answer: output press order as positions only (e.g., '좌상 -> 우하 -> ...').\n"
                 )
                 if kt_ctx and kt_ctx.strip():
                     sc += f"\n\n[KTANE MANUAL CONTEXT]\n{kt_ctx.strip()}"
