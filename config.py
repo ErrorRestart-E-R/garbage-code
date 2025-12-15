@@ -289,7 +289,7 @@ STT_NORMALIZE_AUDIO = False
 
 # Temperature Fallback (어려운 오디오 재시도)
 # temperature: 0.0~1.0 (0.0=결정적, 1.0=랜덤, 리스트로 순차 시도)
-STT_TEMPERATURE = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+STT_TEMPERATURE = [0.0, 0.2]
 
 # 품질 필터링 임계값
 # compression_ratio_threshold: 0.0~∞ (기본값=2.4, 높은 압축률=환각 가능성)
@@ -319,8 +319,22 @@ MIN_SILENCE_DURATION_MS = 200
 # 노이즈 필터링
 # min_audio_length: 0~∞ (bytes, 16kHz 16bit 기준 0.1초=3200)
 STT_MIN_AUDIO_LENGTH = 3200
-# min_rms_threshold: 0.0~1.0 (RMS 에너지, 0.01 미만은 거의 무음)
-STT_MIN_RMS_THRESHOLD = 0.01
+# min_audio_seconds: 전사로 넘길 최소 발화 길이(초). 너무 짧은 잡음/클릭/호흡을 STT에 넘기지 않기 위함.
+# 16kHz 16bit mono 기준: bytes ~= seconds * 16000 * 2
+STT_MIN_AUDIO_SECONDS = 0.3
+# min_rms_threshold: 0.0~1.0 (RMS 에너지, 너무 작은 소리/잡음은 무시)
+# Discord 환경에서 0.01은 너무 민감할 수 있어 기본값을 약간 올립니다.
+STT_MIN_RMS_THRESHOLD = 0.1
+
+# STT 후처리(환각/잡음 억제) 파라미터
+# - segment.no_speech_prob 가 이 값보다 크면(=무음 가능성 큼) 결과를 폐기
+STT_POST_FILTER_NO_SPEECH_MARGIN = 0.15
+# - segment.avg_logprob 평균이 너무 낮으면(=저품질/환각 가능성) 결과를 폐기 (faster-whisper가 제공할 때만 적용)
+STT_POST_FILTER_MIN_AVG_LOGPROB = -0.85
+
+# 이전 세그먼트 텍스트를 컨텍스트로 사용할지 여부.
+# 잡음/짧은 소리에서 "감사합니다" 같은 이전 문장 끌려오는 현상을 줄이려면 False가 유리합니다.
+STT_CONDITION_ON_PREVIOUS_TEXT = False
 
 # ============================================================================
 # 9. TTS (Text-to-Speech) 설정

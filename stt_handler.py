@@ -108,7 +108,7 @@ def run_stt_process(audio_queue, result_queue, command_queue, status_queue=None)
                 del user_buffers[user_id][:config.FRAME_SIZE_BYTES]
                 user_speech_buffers[user_id].extend(frame)
         except queue.Empty:
-            for user_id in user_last_activity.keys():
+            for user_id in list(user_last_activity.keys()):
                 if time.time() - user_last_activity[user_id] > config.MIN_SILENCE_DURATION_MS/1000:
                     # Silence detected.
                     if len(user_speech_buffers[user_id]) > 0:
@@ -139,6 +139,16 @@ def transcribe_and_send(model, user_id, audio_data, result_queue):
 
     data_s16 = np.frombuffer(audio_data, dtype=np.int16)
     data_f32 = data_s16.astype(np.float32) / 32768.0
+
+    # Duration gate (prevents tiny clicks/breaths from triggering hallucinated text)
+    try:
+        duration_seconds = float(len(audio_data)) / (16000.0 * 2.0)  # 16kHz * 16-bit mono
+        min_sec = float(getattr(config, "STT_MIN_AUDIO_SECONDS", 0.0) or 0.0)
+        if min_sec > 0.0 and duration_seconds < min_sec:
+            logger.debug(f"Audio too short ({duration_seconds:.3f}s < {min_sec:.3f}s), skipping")
+            return
+    except Exception:
+        pass
     
     # Check audio energy (RMS) - filter out noise/silence
     rms = np.sqrt(np.mean(data_f32 ** 2))
@@ -185,22 +195,30 @@ def transcribe_and_send(model, user_id, audio_data, result_queue):
             },
             
             # Additional options
-            condition_on_previous_text=True,  # Use context from previous segments
+            condition_on_previous_text=bool(getattr(config, "STT_CONDITION_ON_PREVIOUS_TEXT", False)),
             initial_prompt=None,  # Can add domain-specific prompt here
         )
         
         text = ""
         no_speech_prob_sum = 0
         segment_count = 0
+        logprob_sum = 0.0
+        logprob_count = 0
+        no_speech_margin = float(getattr(config, "STT_POST_FILTER_NO_SPEECH_MARGIN", 0.2))
         
         for segment in segments:
             # Check no_speech_probability - high value means likely hallucination
-            if segment.no_speech_prob > config.STT_NO_SPEECH_THRESHOLD + 0.2:
+            if segment.no_speech_prob > float(config.STT_NO_SPEECH_THRESHOLD) + no_speech_margin:
                 logger.debug(f"Skipping segment with high no_speech_prob: {segment.no_speech_prob:.2f}")
                 continue
             text += segment.text
             no_speech_prob_sum += segment.no_speech_prob
             segment_count += 1
+
+            lp = getattr(segment, "avg_logprob", None)
+            if isinstance(lp, (int, float)):
+                logprob_sum += float(lp)
+                logprob_count += 1
         
         end_time = time.time()
         duration = end_time - start_time
@@ -209,6 +227,14 @@ def transcribe_and_send(model, user_id, audio_data, result_queue):
         
         if text:
             avg_no_speech = no_speech_prob_sum / max(segment_count, 1)
+            if logprob_count > 0:
+                avg_lp = logprob_sum / max(logprob_count, 1)
+                min_lp = float(getattr(config, "STT_POST_FILTER_MIN_AVG_LOGPROB", -999.0))
+                if avg_lp < min_lp:
+                    logger.debug(
+                        f"Skipping low-confidence transcription (avg_logprob={avg_lp:.2f} < {min_lp:.2f}): {text}"
+                    )
+                    return
             logger.debug(f"Transcription successful for user {user_id}")
             logger.debug(f"Transcription: {text} (avg no_speech_prob: {avg_no_speech:.2f}, latency: {duration:.2f}s)")
             result_queue.put({
