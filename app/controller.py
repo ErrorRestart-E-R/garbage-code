@@ -472,12 +472,6 @@ class ConversationController:
             await player.drain()
             return tool_shortcut
 
-        memory_context = ""
-        if last_user_msg:
-            memory_context = await asyncio.to_thread(
-                self.memory_manager.get_memory_context, last_user_msg, last_user_name
-            )
-
         # KTANE manual RAG context (text-only)
         ktane_mode = bool(getattr(config, "KTANE_GAME_MODE_ENABLED", False))
         ktane_context = ""
@@ -491,6 +485,13 @@ class ConversationController:
             except Exception as e:
                 logger.warning(f"[KTANE] RAG query failed: {e}")
                 ktane_context = ""
+
+        # Long-term memory context (skip in KTANE mode to save prompt budget)
+        memory_context = ""
+        if last_user_msg and (not ktane_mode):
+            memory_context = await asyncio.to_thread(
+                self.memory_manager.get_memory_context, last_user_msg, last_user_name
+            )
 
         # TTS streaming: sentence queue
         full_response = ""

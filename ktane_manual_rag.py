@@ -551,7 +551,7 @@ class KtaneManualRag:
         return RagResult(hits=hits, top_score=top_score, error=err)
 
     @staticmethod
-    def format_context(result: RagResult, max_chars: int = 6000) -> str:
+    def format_context(result: RagResult, max_chars: int = 6000, max_chars_per_hit: int = 900) -> str:
         """
         Turn retrieved hits into a single prompt-ready context string.
         """
@@ -559,11 +559,15 @@ class KtaneManualRag:
             return ""
 
         budget = max(500, int(max_chars))
+        per_hit = max(200, int(max_chars_per_hit))
         parts: List[str] = []
         used = 0
         for h in result.hits:
             header = f"[source={h.source} score={h.score:.3f}]"
-            block = f"{header}\n{h.text}".strip()
+            text = (h.text or "").strip()
+            if len(text) > per_hit:
+                text = text[:per_hit].rstrip()
+            block = f"{header}\n{text}".strip()
             if not block:
                 continue
             if used + len(block) + 2 > budget and parts:

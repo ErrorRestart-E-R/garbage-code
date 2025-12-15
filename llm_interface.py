@@ -127,6 +127,31 @@ def _should_enable_llm_tools(messages: List[Dict[str, str]]) -> bool:
     return False
 
 
+def _is_exceed_context_size_error(exc: Exception) -> bool:
+    """
+    Detect llama.cpp/OpenAI-compatible context overflow errors.
+    """
+    s = str(exc) or ""
+    return ("exceed_context_size_error" in s) or ("exceeds the available context size" in s)
+
+
+def _trim_messages_keep_last(
+    msgs: List[Dict[str, str]],
+    max_messages: int,
+) -> List[Dict[str, str]]:
+    if not msgs:
+        return []
+    if max_messages <= 0 or len(msgs) <= max_messages:
+        trimmed = list(msgs)
+    else:
+        trimmed = list(msgs[-max_messages:])
+
+    # Ensure starts with user
+    while trimmed and trimmed[0].get("role") != "user":
+        trimmed.pop(0)
+    return trimmed
+
+
 async def get_response_stream(
     messages: List[Dict[str, str]],
     participant_count: int = 1,
@@ -157,29 +182,47 @@ async def get_response_stream(
         tools = mcp_library.get_tools() if _should_enable_llm_tools(messages) else None
         
         # Build system prompt with participant count context
-        system_content = config.SYSTEM_PROMPT.format(
+        system_base = config.SYSTEM_PROMPT.format(
             ai_name=config.AI_NAME,
             participant_count=participant_count
         )
-        
-        # Add long-term memory if available
-        if memory_context:
-            system_content += f"\n\n[LONG-TERM MEMORY]\n{memory_context}"
 
-        # KTANE game mode: rely on injected manual context, do not guess.
-        if ktane_mode:
-            system_content += (
-                "\n\n[KTANE GAME MODE]\n"
-                "- You are assisting with the game 'KEEP TALKING and NOBODY EXPLODES'.\n"
-                "- The user describes what they see on the bomb in Korean.\n"
-                "- You MUST rely only on the provided [KTANE MANUAL CONTEXT] text for defusal rules.\n"
-                "- If the context is missing or insufficient, ask 1-2 short clarifying questions.\n"
-                "- Never guess rules from general knowledge when KTANE mode is on.\n"
-            )
-            if ktane_context and ktane_context.strip():
-                system_content += f"\n\n[KTANE MANUAL CONTEXT]\n{ktane_context.strip()}"
-        
+        def _build_system_content(mem_ctx: str, kt_mode: bool, kt_ctx: str) -> str:
+            sc = system_base
+
+            # Add long-term memory if available
+            if mem_ctx:
+                sc += f"\n\n[LONG-TERM MEMORY]\n{mem_ctx}"
+
+            # KTANE game mode: rely on injected manual context, do not guess.
+            if kt_mode:
+                sc += (
+                    "\n\n[KTANE GAME MODE]\n"
+                    "- You are assisting with the game 'KEEP TALKING and NOBODY EXPLODES'.\n"
+                    "- The user describes what they see on the bomb in Korean.\n"
+                    "- You MUST rely only on the provided [KTANE MANUAL CONTEXT] text for defusal rules.\n"
+                    "- If the context is missing or insufficient, ask 1-2 short clarifying questions.\n"
+                    "- Never guess rules from general knowledge when KTANE mode is on.\n"
+                    "- In KTANE mode, ALWAYS respond to the latest user message. Do not stay silent.\n"
+                    "- In KTANE mode, NEVER output an empty response.\n"
+                    "\n"
+                    "[KTANE OUTPUT RULES]\n"
+                    "- Do NOT explain how you found the rule.\n"
+                    "- Do NOT quote or paraphrase the manual/context.\n"
+                    "- Do NOT mention '매뉴얼', '문서', 'RAG', '컨텍스트' in your reply.\n"
+                    "- Output only the final actionable instruction(s) the defuser must do now.\n"
+                )
+                if kt_ctx and kt_ctx.strip():
+                    sc += f"\n\n[KTANE MANUAL CONTEXT]\n{kt_ctx.strip()}"
+
+            return sc
+
         normalized_messages = _normalize_messages_for_llama(messages)
+        if ktane_mode:
+            # KTANE는 "현재 상태" 중심이므로 과거 잡담 히스토리를 짧게 유지해 프롬프트를 보호합니다.
+            normalized_messages = _trim_messages_keep_last(normalized_messages, 8)
+
+        system_content = _build_system_content(memory_context, ktane_mode, ktane_context)
 
         # Build final messages list: system + conversation history
         final_messages = [{"role": "system", "content": system_content}] + normalized_messages
@@ -205,7 +248,50 @@ async def get_response_stream(
         content_buffer = ""
         has_yielded = False
         
-        stream = await client.chat.completions.create(**chat_kwargs)
+        # Create stream (retry on context overflow by trimming variable contexts)
+        try:
+            stream = await client.chat.completions.create(**chat_kwargs)
+        except Exception as e:
+            if not _is_exceed_context_size_error(e):
+                raise
+
+            logger.warning(f"LLM prompt exceeded context. Retrying with smaller context. err={e}")
+
+            # Retry variants: progressively shrink KTANE context and history
+            variants: list[tuple[str, str, int]] = []
+            # (mem_ctx, kt_ctx, max_msgs)
+            if ktane_mode:
+                ktx = (ktane_context or "").strip()
+                if ktx:
+                    variants.append(("", ktx[:2500], 6))
+                    variants.append(("", ktx[:1200], 4))
+                variants.append(("", "", 4))
+            else:
+                # Non-KTANE: drop long-term memory and shrink history
+                variants.append(("", "", 10))
+                variants.append(("", "", 6))
+
+            last_exc: Exception = e
+            stream = None
+            for mem_ctx, kt_ctx, max_msgs in variants:
+                try:
+                    nm = _trim_messages_keep_last(normalized_messages, max_msgs)
+                    sc = _build_system_content(mem_ctx, ktane_mode, kt_ctx)
+                    chat_kwargs["messages"] = [{"role": "system", "content": sc}] + nm
+                    stream = await client.chat.completions.create(**chat_kwargs)
+
+                    # Update locals used later (tool injection / second pass)
+                    system_content = sc
+                    normalized_messages = nm
+                    break
+                except Exception as e2:
+                    last_exc = e2
+                    if not _is_exceed_context_size_error(e2):
+                        raise
+
+            if stream is None:
+                raise last_exc
+
         async for chunk in stream:
             # Extract content from streaming chunk
             delta = chunk.choices[0].delta if chunk.choices else None
@@ -265,18 +351,35 @@ async def get_response_stream(
 
             # Re-run generation WITHOUT adding tool-role messages to keep strict alternation
             messages_with_tools = [{"role": "system", "content": system_with_tools}] + normalized_messages
-
-            stream = await client.chat.completions.create(
-                model=config.LLM_MODEL_NAME,
-                messages=messages_with_tools,
-                stream=True,
-                temperature=config.LLM_RESPONSE_TEMPERATURE,
-                top_p=config.LLM_RESPONSE_TOP_P,
-                extra_body={
-                    "top_k": config.LLM_RESPONSE_TOP_K,
-                    "repeat_penalty": config.LLM_RESPONSE_REPEAT_PENALTY,
-                },
-            )
+            try:
+                stream = await client.chat.completions.create(
+                    model=config.LLM_MODEL_NAME,
+                    messages=messages_with_tools,
+                    stream=True,
+                    temperature=config.LLM_RESPONSE_TEMPERATURE,
+                    top_p=config.LLM_RESPONSE_TOP_P,
+                    extra_body={
+                        "top_k": config.LLM_RESPONSE_TOP_K,
+                        "repeat_penalty": config.LLM_RESPONSE_REPEAT_PENALTY,
+                    },
+                )
+            except Exception as e:
+                # If tool injection causes overflow, drop tool results and continue without tools.
+                if _is_exceed_context_size_error(e):
+                    logger.warning(f"Tool-injected prompt exceeded context. Dropping tool_results. err={e}")
+                    stream = await client.chat.completions.create(
+                        model=config.LLM_MODEL_NAME,
+                        messages=[{"role": "system", "content": system_content}] + normalized_messages,
+                        stream=True,
+                        temperature=config.LLM_RESPONSE_TEMPERATURE,
+                        top_p=config.LLM_RESPONSE_TOP_P,
+                        extra_body={
+                            "top_k": config.LLM_RESPONSE_TOP_K,
+                            "repeat_penalty": config.LLM_RESPONSE_REPEAT_PENALTY,
+                        },
+                    )
+                else:
+                    raise
             async for chunk in stream:
                 delta = chunk.choices[0].delta if chunk.choices else None
                 if delta and delta.content:
