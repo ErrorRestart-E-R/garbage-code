@@ -222,6 +222,50 @@ class AudioPlayer:
         self.is_playing = False
         self._idle_event.set()
 
+    def has_current_playback(self) -> bool:
+        """
+        Returns True if an audio item is currently playing (i.e., vc.play() succeeded).
+        This is a stronger signal than `is_playing`, which also covers queued items.
+        """
+        return self._current_item is not None
+
+    def flush_pending_only(self) -> None:
+        """
+        Cancel any queued / pending audio WITHOUT stopping current playback.
+
+        Use this for PREPLAY barge-in cases:
+        - We want to drop not-yet-played audio and prevent future playback,
+          but we must not stop the voice client (which could break STT reception).
+        """
+        # Cancel pending retry item (already playing case)
+        if self._pending_item is not None:
+            _, fut = self._pending_item
+            try:
+                if not fut.done():
+                    fut.cancel()
+            except Exception:
+                pass
+            self._pending_item = None
+
+        # Drain queued items and cancel their futures
+        try:
+            while True:
+                _, fut = self.queue.get_nowait()
+                try:
+                    if not fut.done():
+                        fut.cancel()
+                except Exception:
+                    pass
+        except asyncio.QueueEmpty:
+            pass
+        except Exception:
+            pass
+
+        # If nothing is currently playing, we are idle now.
+        if self._current_item is None:
+            self.is_playing = False
+            self._idle_event.set()
+
     def _play_next(self):
         # If we previously failed to start due to "already playing", retry that first.
         item: Optional[Tuple[bytes, asyncio.Future]] = None

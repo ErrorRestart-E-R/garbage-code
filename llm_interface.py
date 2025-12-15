@@ -189,8 +189,8 @@ async def get_response_stream(
 
         def _build_system_content(mem_ctx: str, kt_mode: bool, kt_ctx: str) -> str:
             sc = system_base
-
-            # Add long-term memory if available
+        
+        # Add long-term memory if available
             if mem_ctx:
                 sc += f"\n\n[LONG-TERM MEMORY]\n{mem_ctx}"
 
@@ -220,11 +220,8 @@ async def get_response_stream(
                     sc += f"\n\n[KTANE MANUAL CONTEXT]\n{kt_ctx.strip()}"
 
             return sc
-
+        
         normalized_messages = _normalize_messages_for_llama(messages)
-        if ktane_mode:
-            # KTANE는 "현재 상태" 중심이므로 과거 잡담 히스토리를 짧게 유지해 프롬프트를 보호합니다.
-            normalized_messages = _trim_messages_keep_last(normalized_messages, 8)
 
         system_content = _build_system_content(memory_context, ktane_mode, ktane_context)
 
@@ -252,49 +249,8 @@ async def get_response_stream(
         content_buffer = ""
         has_yielded = False
         
-        # Create stream (retry on context overflow by trimming variable contexts)
-        try:
-            stream = await client.chat.completions.create(**chat_kwargs)
-        except Exception as e:
-            if not _is_exceed_context_size_error(e):
-                raise
-
-            logger.warning(f"LLM prompt exceeded context. Retrying with smaller context. err={e}")
-
-            # Retry variants: progressively shrink KTANE context and history
-            variants: list[tuple[str, str, int]] = []
-            # (mem_ctx, kt_ctx, max_msgs)
-            if ktane_mode:
-                ktx = (ktane_context or "").strip()
-                if ktx:
-                    variants.append(("", ktx[:2500], 6))
-                    variants.append(("", ktx[:1200], 4))
-                variants.append(("", "", 4))
-            else:
-                # Non-KTANE: drop long-term memory and shrink history
-                variants.append(("", "", 10))
-                variants.append(("", "", 6))
-
-            last_exc: Exception = e
-            stream = None
-            for mem_ctx, kt_ctx, max_msgs in variants:
-                try:
-                    nm = _trim_messages_keep_last(normalized_messages, max_msgs)
-                    sc = _build_system_content(mem_ctx, ktane_mode, kt_ctx)
-                    chat_kwargs["messages"] = [{"role": "system", "content": sc}] + nm
-                    stream = await client.chat.completions.create(**chat_kwargs)
-
-                    # Update locals used later (tool injection / second pass)
-                    system_content = sc
-                    normalized_messages = nm
-                    break
-                except Exception as e2:
-                    last_exc = e2
-                    if not _is_exceed_context_size_error(e2):
-                        raise
-
-            if stream is None:
-                raise last_exc
+        # Create stream (no automatic retry/trim on context overflow)
+        stream = await client.chat.completions.create(**chat_kwargs)
 
         async for chunk in stream:
             # Extract content from streaming chunk
@@ -355,35 +311,17 @@ async def get_response_stream(
 
             # Re-run generation WITHOUT adding tool-role messages to keep strict alternation
             messages_with_tools = [{"role": "system", "content": system_with_tools}] + normalized_messages
-            try:
-                stream = await client.chat.completions.create(
-                    model=config.LLM_MODEL_NAME,
-                    messages=messages_with_tools,
-                    stream=True,
-                    temperature=config.LLM_RESPONSE_TEMPERATURE,
-                    top_p=config.LLM_RESPONSE_TOP_P,
-                    extra_body={
-                        "top_k": config.LLM_RESPONSE_TOP_K,
-                        "repeat_penalty": config.LLM_RESPONSE_REPEAT_PENALTY,
-                    },
-                )
-            except Exception as e:
-                # If tool injection causes overflow, drop tool results and continue without tools.
-                if _is_exceed_context_size_error(e):
-                    logger.warning(f"Tool-injected prompt exceeded context. Dropping tool_results. err={e}")
-                    stream = await client.chat.completions.create(
-                        model=config.LLM_MODEL_NAME,
-                        messages=[{"role": "system", "content": system_content}] + normalized_messages,
-                        stream=True,
-                        temperature=config.LLM_RESPONSE_TEMPERATURE,
-                        top_p=config.LLM_RESPONSE_TOP_P,
-                        extra_body={
-                            "top_k": config.LLM_RESPONSE_TOP_K,
-                            "repeat_penalty": config.LLM_RESPONSE_REPEAT_PENALTY,
-                        },
-                    )
-                else:
-                    raise
+            stream = await client.chat.completions.create(
+                model=config.LLM_MODEL_NAME,
+                messages=messages_with_tools,
+                stream=True,
+                temperature=config.LLM_RESPONSE_TEMPERATURE,
+                top_p=config.LLM_RESPONSE_TOP_P,
+                extra_body={
+                    "top_k": config.LLM_RESPONSE_TOP_K,
+                    "repeat_penalty": config.LLM_RESPONSE_REPEAT_PENALTY,
+                },
+            )
             async for chunk in stream:
                 delta = chunk.choices[0].delta if chunk.choices else None
                 if delta and delta.content:

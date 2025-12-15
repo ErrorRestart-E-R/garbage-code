@@ -4,6 +4,7 @@ import multiprocessing
 import queue
 import re
 from dataclasses import dataclass
+from enum import Enum
 from typing import Optional, Tuple, Any, List, Dict
 
 import config
@@ -29,6 +30,12 @@ class PendingResponse:
     message: str
     history_messages: List[Dict[str, str]]  # OpenAI messages format list
     message_index: int
+
+
+class ResponsePhase(str, Enum):
+    IDLE = "idle"
+    PREPLAY = "preplay"   # LLM/TTS in progress, no audio playback started yet
+    PLAYING = "playing"   # audio playback has started for current turn
 
 
 class ConversationController:
@@ -112,9 +119,12 @@ class ConversationController:
         # Any in-flight response compares its captured token against current value.
         self._run_token: int = 0
 
-        # If user speaks while the assistant is responding (TTS playing),
-        # we should process it after speech ends even if it's "stale".
-        self._pending_user_during_response: bool = False
+        # Barge-in / turn-consolidation state machine
+        self._response_phase: ResponsePhase = ResponsePhase.IDLE
+        self._active_turn_token: int = 0
+        self._barge_in_deadline_ts: float = 0.0
+        self._stt_buffer_during_playback: list[tuple[str, str]] = []  # (user_name, text)
+        self._active_tts_task: Optional[asyncio.Task] = None
 
         # STT Result queue (multiprocessing)
         self.result_queue: Optional[multiprocessing.Queue] = None
@@ -149,20 +159,48 @@ class ConversationController:
                         user = self.bot.get_user(user_id)
                         user_name = user.display_name if user else f"User_{user_id}"
 
-                    if user_text:
-                        print(f"\n{user_name}: {user_text}")
+                    if not user_text:
+                        return
+
+                    print(f"\n{user_name}: {user_text}")
+
+                    # 0) Explicit interrupt command always applies immediately.
+                    if self._is_interrupt_command(user_text):
                         self.history.add(user_name, user_text)
                         self.message_counter += 1
-                        logger.debug(f"History: Added message #{self.message_counter} from {user_name}")
+                        logger.debug(f"History: Added message #{self.message_counter} from {user_name} (interrupt)")
+                        await self._apply_interrupt()
+                        return
 
-                        # Interruption policy (B):
-                        # Trigger only on "{AI_NAME} 그만말해" / "{AI_NAME} 조용히해"
-                        if self._is_interrupt_command(user_text):
-                            await self._apply_interrupt()
-                        else:
-                            # Mark that user spoke while we were responding, so we shouldn't drop it as stale later.
-                            if self.is_responding:
-                                self._pending_user_during_response = True
+                    now = time.time()
+
+                    # 1) If we recently triggered barge-in, keep extending the merge window.
+                    if self._barge_in_deadline_ts and now < self._barge_in_deadline_ts:
+                        self._barge_in_deadline_ts = now + (self._barge_in_window_seconds())
+
+                    # 2) If audio playback already started (PLAYING), do NOT interrupt.
+                    # Buffer STT and flush after playback ends.
+                    is_playing_now = False
+                    try:
+                        is_playing_now = self.audio_player.has_current_playback()
+                    except Exception:
+                        is_playing_now = False
+                    if self.is_responding and (self._response_phase == ResponsePhase.PLAYING or is_playing_now):
+                        self._stt_buffer_during_playback.append((user_name, user_text))
+                        logger.debug(
+                            f"[BARGE-IN] Buffered STT during PLAYING. buffered={len(self._stt_buffer_during_playback)}"
+                        )
+                        return
+
+                    # 3) Normal path: store to history immediately.
+                    self.history.add(user_name, user_text)
+                    self.message_counter += 1
+                    logger.debug(f"History: Added message #{self.message_counter} from {user_name}")
+
+                    # 4) If we are in PREPLAY (LLM/TTS before first playback) and a new STT arrives,
+                    # cancel and re-run after debounce (turn consolidation).
+                    if self.is_responding and self._response_phase == ResponsePhase.PREPLAY:
+                        await self._apply_barge_in_preplay(user_name=user_name, user_text=user_text)
 
                 await _handle_result(result)
 
@@ -185,6 +223,12 @@ class ConversationController:
                     await asyncio.sleep(0.1)
                     continue
 
+                # Debounce window after a PREPLAY barge-in: wait for user speech to settle.
+                now = time.time()
+                if self._barge_in_deadline_ts and now < self._barge_in_deadline_ts:
+                    await asyncio.sleep(min(0.05, max(0.01, self._barge_in_deadline_ts - now)))
+                    continue
+
                 if self.message_counter <= self.last_processed_index:
                     await asyncio.sleep(0.1)
                     continue
@@ -199,25 +243,20 @@ class ConversationController:
                 if self._is_interrupt_command(current_message):
                     await self._apply_interrupt()
                     self.last_processed_index = self.message_counter
-                    self._pending_user_during_response = False
                     await asyncio.sleep(0.05)
                     continue
 
                 age = time.time() - current_timestamp
-                if age > config.MESSAGE_STALENESS_THRESHOLD and (not self._pending_user_during_response):
+                if age > config.MESSAGE_STALENESS_THRESHOLD:
                     logger.warning(
                         f"Skipping stale message #{self.message_counter} (age: {age:.1f}s)"
                     )
                     self.last_processed_index = self.message_counter
                     continue
-                if age > config.MESSAGE_STALENESS_THRESHOLD and self._pending_user_during_response:
-                    logger.info(
-                        f"Processing message #{self.message_counter} even though it's stale (age: {age:.1f}s) because it arrived during response."
-                    )
 
                 current_index = self.message_counter
                 self.last_processed_index = current_index
-                self._pending_user_during_response = False
+                self._barge_in_deadline_ts = 0.0
 
                 # Rate limiting
                 time_since_last = time.time() - self.last_response_time
@@ -245,8 +284,12 @@ class ConversationController:
                 pending, participant_count = await self.response_queue.get()
                 self.is_responding = True
 
+                full_response: Optional[str] = None
                 try:
                     token = self._run_token
+                    self._active_turn_token = token
+                    self._response_phase = ResponsePhase.PREPLAY
+                    self._stt_buffer_during_playback = []
                     full_response = await self._execute_response(
                         messages=pending.history_messages,
                         participant_count=participant_count,
@@ -256,10 +299,27 @@ class ConversationController:
                     if full_response and full_response.strip():
                         self.history.add_ai_response(full_response)
                         self.last_response_time = time.time()
-                        await self.memory_queue.put((pending.speaker, pending.message))
+                        # Avoid memory pollution in KTANE game mode by default
+                        if (not getattr(config, "KTANE_GAME_MODE_ENABLED", False)) or bool(
+                            getattr(config, "KTANE_MEMORY_SAVE_ENABLED", False)
+                        ):
+                            await self.memory_queue.put((pending.speaker, pending.message))
                     else:
                         print("  [No response]")
                 finally:
+                    # Flush any STT buffered during playback (PLAYING) AFTER committing AI response
+                    if self._stt_buffer_during_playback:
+                        for user_name, user_text in self._stt_buffer_during_playback:
+                            self.history.add(user_name, user_text)
+                            self.message_counter += 1
+                        logger.info(
+                            f"[BARGE-IN] Flushed buffered STT after playback: +{len(self._stt_buffer_during_playback)}"
+                        )
+                        self._stt_buffer_during_playback = []
+
+                    # End of turn
+                    self._response_phase = ResponsePhase.IDLE
+                    self._active_turn_token = 0
                     self.is_responding = False
 
             except Exception as e:
@@ -433,6 +493,78 @@ class ConversationController:
         except Exception:
             pass
 
+    def _barge_in_enabled(self) -> bool:
+        return bool(getattr(config, "BARGE_IN_ENABLED", True))
+
+    def _barge_in_window_seconds(self) -> float:
+        ms = int(getattr(config, "BARGE_IN_MERGE_WINDOW_MS", 500))
+        # Clamp to reasonable range
+        ms = max(100, min(ms, 2000))
+        return ms / 1000.0
+
+    def _should_trigger_barge_in(self, user_text: str) -> bool:
+        """
+        Filter out very short/noisy STT fragments to prevent excessive cancellations.
+        """
+        if not user_text or not user_text.strip():
+            return False
+
+        ignore_pat = str(getattr(config, "BARGE_IN_IGNORE_REGEX", "") or "").strip()
+        if ignore_pat:
+            try:
+                if re.fullmatch(ignore_pat, user_text.strip()):
+                    return False
+            except re.error:
+                # invalid regex -> ignore pattern
+                pass
+
+        min_chars = int(getattr(config, "BARGE_IN_MIN_CHARS", 3))
+        min_chars = max(1, min(min_chars, 20))
+        compact = re.sub(r"\s+", "", user_text)
+        return len(compact) >= min_chars
+
+    async def _apply_barge_in_preplay(self, user_name: str, user_text: str) -> None:
+        """
+        PREPLAY(A/B) 바지인 정책:
+        - 현재 응답(LLM/TTS/대기 오디오)을 취소
+        - 최근 유저 발화가 더 들어올 수 있으니 debounce window를 시작/연장
+        """
+        if not self._barge_in_enabled():
+            return
+        if not self._should_trigger_barge_in(user_text):
+            return
+
+        now = time.time()
+        self._barge_in_deadline_ts = now + self._barge_in_window_seconds()
+
+        # Cancel current turn (no playback yet)
+        self._run_token += 1
+
+        # Flush any queued-but-not-played audio without touching current playback
+        try:
+            self.audio_player.flush_pending_only()
+        except Exception:
+            pass
+
+        # Best-effort cancel of in-flight TTS worker (may be waiting on HTTP)
+        try:
+            t = self._active_tts_task
+            if t and (not t.done()):
+                t.cancel()
+        except Exception:
+            pass
+
+        # Drop queued (not-yet-started) responses
+        try:
+            while True:
+                self.response_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+        except Exception:
+            pass
+
+        logger.info(f"[BARGE-IN] PREPLAY cancel + debounce (speaker={user_name})")
+
     async def _execute_response(
         self,
         messages: List[Dict[str, str]],
@@ -476,14 +608,26 @@ class ConversationController:
 
             tts_queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
             tts_task = asyncio.create_task(self._tts_worker(tts_queue, player, run_token))
+            self._active_tts_task = tts_task
             if run_token != self._run_token:
-                await tts_queue.put(None)
-                await tts_task
+                try:
+                    tts_task.cancel()
+                except Exception:
+                    pass
+                self._active_tts_task = None
                 return None
 
             await tts_queue.put(tool_shortcut.strip())
             await tts_queue.put(None)
-            await tts_task
+            try:
+                await tts_task
+            except asyncio.CancelledError:
+                self._active_tts_task = None
+                return None
+            finally:
+                if self._active_tts_task is tts_task:
+                    self._active_tts_task = None
+
             await player.drain()
             return tool_shortcut
 
@@ -526,12 +670,16 @@ class ConversationController:
                 logger.warning(f"[KTANE] RAG query failed: {e}")
                 ktane_context = ""
 
-        # Long-term memory context (skip in KTANE mode to save prompt budget)
+        # Long-term memory context
         memory_context = ""
-        if last_user_msg and (not ktane_mode):
+        if last_user_msg:
             memory_context = await asyncio.to_thread(
                 self.memory_manager.get_memory_context, last_user_msg, last_user_name
             )
+            # NOTE:
+            # KTANE 모드에서도 장기기억을 그대로 주입합니다(요청사항).
+            # 프롬프트가 컨텍스트 한도를 초과하면 llm_interface의 재시도 로직이
+            # 자동으로 컨텍스트를 축소/드롭합니다.
 
         # TTS streaming: sentence queue
         full_response = ""
@@ -611,6 +759,7 @@ class ConversationController:
 
         tts_queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
         tts_task = asyncio.create_task(self._tts_worker(tts_queue, player, run_token))
+        self._active_tts_task = tts_task
 
         async for chunk in get_response_stream(
             messages=messages,
@@ -638,12 +787,30 @@ class ConversationController:
         if not first_chunk:
             print()
 
+        # If we were cancelled (barge-in/interrupt) before finishing, stop immediately.
+        if run_token != self._run_token:
+            try:
+                tts_task.cancel()
+            except Exception:
+                pass
+            if self._active_tts_task is tts_task:
+                self._active_tts_task = None
+            return None
+
         # Flush any remaining buffered text
         if run_token == self._run_token:
             await _drain_buffer_to_tts_queue(force=True)
 
         await tts_queue.put(None)
-        await tts_task
+        try:
+            await tts_task
+        except asyncio.CancelledError:
+            if self._active_tts_task is tts_task:
+                self._active_tts_task = None
+            return None
+        finally:
+            if self._active_tts_task is tts_task:
+                self._active_tts_task = None
 
         # Important: response is not "done" until audio playback finishes.
         await player.drain()
@@ -654,7 +821,10 @@ class ConversationController:
 
     async def _tts_worker(self, tts_queue: asyncio.Queue, player: AudioPlayer, run_token: int):
         while True:
-            text = await tts_queue.get()
+            try:
+                text = await tts_queue.get()
+            except asyncio.CancelledError:
+                return
             if text is None:
                 break
 
@@ -676,10 +846,16 @@ class ConversationController:
                     continue
                 if wav_data:
                     await player.add_audio(wav_data)
+            except asyncio.CancelledError:
+                return
             except Exception as e:
                 logger.error(f"TTS error: {e}")
 
     async def _on_tts_audio_start(self, wav_bytes: bytes):
+        # Mark that audio playback has started for this turn.
+        # This is the boundary between PREPLAY(A/B) and PLAYING(C).
+        if self.is_responding and self._response_phase == ResponsePhase.PREPLAY:
+            self._response_phase = ResponsePhase.PLAYING
         if self.lipsync:
             await self.lipsync.start(wav_bytes)
 

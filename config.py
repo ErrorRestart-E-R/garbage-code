@@ -65,6 +65,18 @@ MIN_RESPONSE_INTERVAL = 0             # 응답 간 최소 간격 (초)
 MESSAGE_STALENESS_THRESHOLD = 60.0    # 메시지 유효 기간 (초)
 USER_TIMEOUT_SECONDS = 60             # 사용자 비활성 타임아웃
 
+# 바지인(barge-in) / 턴 합치기(voice turn consolidation)
+# - LLM 응답 생성/재생 중 사용자 발화가 들어오면, 재생 전 단계(PREPLAY)에서는 현재 응답을 취소하고
+#   최근 사용자 발화를 합쳐 다시 응답을 생성합니다.
+# - 이미 음성 재생이 시작된 경우(PLAYING)에는 끊지 않고, 재생이 끝난 뒤 한 번에 처리합니다.
+BARGE_IN_ENABLED = True
+# 재생 전 바지인 시, 추가 발화를 모아 하나의 턴으로 확정하기 위한 디바운스(ms)
+BARGE_IN_MERGE_WINDOW_MS = 500
+# 너무 짧은 발화(잡음/추임새)로 바지인이 과도하게 트리거되는 것을 방지
+BARGE_IN_MIN_CHARS = 3
+# 선택: 무시할 짧은 발화 패턴(비워두면 미사용). 예: r\"^(어|음|잠깐)$\"
+BARGE_IN_IGNORE_REGEX = ""
+
 # MCP 도구 호출
 # - get_current_time / get_weather / calculate 등 "사실 기반" 응답은 툴로 처리하는 편이 안전합니다.
 ENABLE_MCP_TOOLS = True  # MCP 도구 호출 활성화/비활성화
@@ -77,7 +89,6 @@ ENABLE_MCP_TOOLS = True  # MCP 도구 호출 활성화/비활성화
 #   RAG(검색) 컨텍스트로 LLM에 주입하여 해체 방법을 안내합니다.
 #
 # IMPORTANT:
-# - 이 모드는 유저가 폭탄 화면을 사진으로 보내지 않는 것을 전제로 합니다.
 # - 유저는 말로 상태를 설명하고, LLM은 "로컬 매뉴얼 텍스트"에서 근거를 찾아 안내합니다.
 KTANE_GAME_MODE_ENABLED = True
 
@@ -95,6 +106,10 @@ KTANE_RAG_MAX_CONTEXT_CHARS = 6000  # 시스템 프롬프트에 주입할 최대
 # - provider="sentence_transformers": 로컬 SentenceTransformers로 임베딩(최초 실행 시 모델 다운로드 필요)
 KTANE_EMBEDDING_PROVIDER = "auto"  # "auto" | "ollama" | "sentence_transformers"
 KTANE_EMBEDDING_MODEL = "embeddinggemma:latest"
+
+# 게임 모드에서는 잡담/개인정보 메모리 시스템에 게임 내용이 섞이지 않도록 기본적으로 저장을 끕니다.
+# (필요하면 True로 바꾸세요.)
+KTANE_MEMORY_SAVE_ENABLED = True
 
 # ============================================================================
 # 6.5. VTube Studio (VTS) 연동 - Lip Sync
@@ -191,6 +206,7 @@ JSON 규칙(중요):
   - 목표/계획: 앞으로 하려는 일, 일정, 습관
   - 반복적으로 유지되는 설정: 자주 바뀌지 않는 설정/환경
 - 일반 상식/객관적 사실, 잡담, 질문(예: 역사 설명 요청)은 저장하지 않는다.
+- 입력 문장에서 중요한 정보 만 요약해서 짦게 저장한다.
 - 입력 언어가 한국어면 facts도 한국어로 작성한다.
 - 키 이름은 반드시 "facts"만 사용한다(다른 키 금지).
 
