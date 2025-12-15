@@ -70,6 +70,33 @@ USER_TIMEOUT_SECONDS = 60             # 사용자 비활성 타임아웃
 ENABLE_MCP_TOOLS = True  # MCP 도구 호출 활성화/비활성화
 
 # ============================================================================
+# 6.25. GAME MODE: Keep Talking and Nobody Explodes (KTANE) - Manual RAG
+# ============================================================================
+# - 평소에는 일반 잡담 모드로 동작합니다.
+# - KTANE_GAME_MODE_ENABLED=True 일 때만, 로컬에 저장된 "텍스트로 변환된 매뉴얼"을
+#   RAG(검색) 컨텍스트로 LLM에 주입하여 해체 방법을 안내합니다.
+#
+# IMPORTANT:
+# - 이 모드는 유저가 폭탄 화면을 사진으로 보내지 않는 것을 전제로 합니다.
+# - 유저는 말로 상태를 설명하고, LLM은 "로컬 매뉴얼 텍스트"에서 근거를 찾아 안내합니다.
+KTANE_GAME_MODE_ENABLED = True
+
+# 매뉴얼 텍스트 파일 경로(여러 개 가능). PDF를 직접 읽지 않고, 사용자가 텍스트로 변환한 파일을 사용합니다.
+# 예: ["./ktane_manual.txt"] 또는 ["./manuals/ktane_1.txt", "./manuals/ktane_2.txt"]
+KTANE_MANUAL_TEXT_PATHS = ["./ktane_manual.txt"]
+
+# RAG 검색 파라미터
+KTANE_RAG_TOP_K = 4  # 검색으로 가져올 청크 수
+KTANE_RAG_MAX_CONTEXT_CHARS = 6000  # 시스템 프롬프트에 주입할 최대 문자 수(과도한 토큰 방지)
+
+# 임베딩 설정 (KTANE 매뉴얼 검색용)
+# - provider="auto": KTANE_EMBEDDING_MODEL 값 형태로 자동 선택
+# - provider="ollama": OLLAMA_EMBEDDING_URL(기존 Mem0 embedder와 동일)로 임베딩 요청
+# - provider="sentence_transformers": 로컬 SentenceTransformers로 임베딩(최초 실행 시 모델 다운로드 필요)
+KTANE_EMBEDDING_PROVIDER = "auto"  # "auto" | "ollama" | "sentence_transformers"
+KTANE_EMBEDDING_MODEL = "embeddinggemma:latest"
+
+# ============================================================================
 # 6.5. VTube Studio (VTS) 연동 - Lip Sync
 # ============================================================================
 VTS_ENABLED = True

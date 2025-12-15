@@ -130,7 +130,9 @@ def _should_enable_llm_tools(messages: List[Dict[str, str]]) -> bool:
 async def get_response_stream(
     messages: List[Dict[str, str]],
     participant_count: int = 1,
-    memory_context: str = ""
+    memory_context: str = "",
+    ktane_mode: bool = False,
+    ktane_context: str = "",
 ) -> AsyncGenerator[Optional[str], None]:
     """
     Single LLM handles both judgment and response generation.
@@ -163,6 +165,19 @@ async def get_response_stream(
         # Add long-term memory if available
         if memory_context:
             system_content += f"\n\n[LONG-TERM MEMORY]\n{memory_context}"
+
+        # KTANE game mode: rely on injected manual context, do not guess.
+        if ktane_mode:
+            system_content += (
+                "\n\n[KTANE GAME MODE]\n"
+                "- You are assisting with the game 'KEEP TALKING and NOBODY EXPLODES'.\n"
+                "- The user describes what they see on the bomb in Korean.\n"
+                "- You MUST rely only on the provided [KTANE MANUAL CONTEXT] text for defusal rules.\n"
+                "- If the context is missing or insufficient, ask 1-2 short clarifying questions.\n"
+                "- Never guess rules from general knowledge when KTANE mode is on.\n"
+            )
+            if ktane_context and ktane_context.strip():
+                system_content += f"\n\n[KTANE MANUAL CONTEXT]\n{ktane_context.strip()}"
         
         normalized_messages = _normalize_messages_for_llama(messages)
 

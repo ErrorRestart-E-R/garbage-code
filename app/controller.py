@@ -13,6 +13,7 @@ from logger import setup_logger
 from memory_manager import MemoryManager
 from conversation_history import ConversationHistory
 from llm_interface import get_response_stream
+from ktane_manual_rag import KtaneManualRag
 from audio_utils import AudioPlayer
 from tts_handler import tts_handler
 from vts_backend import build_vts_client
@@ -49,6 +50,24 @@ class ConversationController:
             ai_name=config.AI_NAME,
         )
         self.memory_manager = MemoryManager()
+        self.ktane_rag: Optional[KtaneManualRag] = None
+        if getattr(config, "KTANE_GAME_MODE_ENABLED", False):
+            try:
+                self.ktane_rag = KtaneManualRag(
+                    manual_paths=getattr(config, "KTANE_MANUAL_TEXT_PATHS", []),
+                    embedding_model=getattr(
+                        config,
+                        "KTANE_EMBEDDING_MODEL",
+                        "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+                    ),
+                    embedding_provider=getattr(config, "KTANE_EMBEDDING_PROVIDER", "auto"),
+                    ollama_base_url=getattr(config, "OLLAMA_EMBEDDING_URL", None),
+                    top_k=int(getattr(config, "KTANE_RAG_TOP_K", 4)),
+                )
+                logger.info("[KTANE] Game mode enabled (manual RAG ready)")
+            except Exception as e:
+                self.ktane_rag = None
+                logger.error(f"[KTANE] Failed to init manual RAG: {e}")
         self.tts = tts_handler(
             config.TTS_SERVER_URL,
             config.TTS_REFERENCE_FILE,
@@ -459,6 +478,20 @@ class ConversationController:
                 self.memory_manager.get_memory_context, last_user_msg, last_user_name
             )
 
+        # KTANE manual RAG context (text-only)
+        ktane_mode = bool(getattr(config, "KTANE_GAME_MODE_ENABLED", False))
+        ktane_context = ""
+        if ktane_mode and self.ktane_rag and last_user_msg:
+            try:
+                rag_result = await asyncio.to_thread(self.ktane_rag.query, last_user_msg)
+                ktane_context = self.ktane_rag.format_context(
+                    rag_result,
+                    max_chars=int(getattr(config, "KTANE_RAG_MAX_CONTEXT_CHARS", 6000)),
+                )
+            except Exception as e:
+                logger.warning(f"[KTANE] RAG query failed: {e}")
+                ktane_context = ""
+
         # TTS streaming: sentence queue
         full_response = ""
         buffer = ""
@@ -542,6 +575,8 @@ class ConversationController:
             messages=messages,
             participant_count=participant_count,
             memory_context=memory_context,
+            ktane_mode=ktane_mode,
+            ktane_context=ktane_context,
         ):
             if run_token != self._run_token:
                 break
