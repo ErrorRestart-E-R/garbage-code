@@ -112,6 +112,10 @@ class ConversationController:
         # Any in-flight response compares its captured token against current value.
         self._run_token: int = 0
 
+        # If user speaks while the assistant is responding (TTS playing),
+        # we should process it after speech ends even if it's "stale".
+        self._pending_user_during_response: bool = False
+
         # STT Result queue (multiprocessing)
         self.result_queue: Optional[multiprocessing.Queue] = None
 
@@ -155,6 +159,10 @@ class ConversationController:
                         # Trigger only on "{AI_NAME} 그만말해" / "{AI_NAME} 조용히해"
                         if self._is_interrupt_command(user_text):
                             await self._apply_interrupt()
+                        else:
+                            # Mark that user spoke while we were responding, so we shouldn't drop it as stale later.
+                            if self.is_responding:
+                                self._pending_user_during_response = True
 
                 await _handle_result(result)
 
@@ -191,18 +199,25 @@ class ConversationController:
                 if self._is_interrupt_command(current_message):
                     await self._apply_interrupt()
                     self.last_processed_index = self.message_counter
+                    self._pending_user_during_response = False
                     await asyncio.sleep(0.05)
                     continue
 
-                if time.time() - current_timestamp > config.MESSAGE_STALENESS_THRESHOLD:
+                age = time.time() - current_timestamp
+                if age > config.MESSAGE_STALENESS_THRESHOLD and (not self._pending_user_during_response):
                     logger.warning(
-                        f"Skipping stale message #{self.message_counter} (age: {time.time() - current_timestamp:.1f}s)"
+                        f"Skipping stale message #{self.message_counter} (age: {age:.1f}s)"
                     )
                     self.last_processed_index = self.message_counter
                     continue
+                if age > config.MESSAGE_STALENESS_THRESHOLD and self._pending_user_during_response:
+                    logger.info(
+                        f"Processing message #{self.message_counter} even though it's stale (age: {age:.1f}s) because it arrived during response."
+                    )
 
                 current_index = self.message_counter
                 self.last_processed_index = current_index
+                self._pending_user_during_response = False
 
                 # Rate limiting
                 time_since_last = time.time() - self.last_response_time
