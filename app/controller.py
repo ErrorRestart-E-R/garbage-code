@@ -14,11 +14,14 @@ from logger import setup_logger
 from memory_manager import MemoryManager
 from conversation_history import ConversationHistory
 from llm_interface import get_response_stream
-from ktane_manual_rag import KtaneManualRag
 from audio_utils import AudioPlayer
 from tts_handler import tts_handler
 from vts_backend import build_vts_client
 from services.lipsync import VTSAudioLipSync, LipSyncConfig
+
+from game_gateway import GameHubClient
+from app.game_router import GameRouter
+from game_protocol import ControlAction, parse_control_line
 
 
 logger = setup_logger(__name__, config.LOG_FILE, config.LOG_LEVEL)
@@ -57,24 +60,23 @@ class ConversationController:
             ai_name=config.AI_NAME,
         )
         self.memory_manager = MemoryManager()
-        self.ktane_rag: Optional[KtaneManualRag] = None
-        if getattr(config, "KTANE_GAME_MODE_ENABLED", False):
+
+        # GameHub (separate process via HTTP)
+        self.game_hub: Optional[GameHubClient] = None
+        self.game_router: Optional[GameRouter] = None
+        if bool(getattr(config, "GAME_HUB_ENABLED", True)):
             try:
-                self.ktane_rag = KtaneManualRag(
-                    manual_paths=getattr(config, "KTANE_MANUAL_TEXT_PATHS", []),
-                    embedding_model=getattr(
-                        config,
-                        "KTANE_EMBEDDING_MODEL",
-                        "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
-                    ),
-                    embedding_provider=getattr(config, "KTANE_EMBEDDING_PROVIDER", "auto"),
-                    ollama_base_url=getattr(config, "OLLAMA_EMBEDDING_URL", None),
-                    top_k=int(getattr(config, "KTANE_RAG_TOP_K", 4)),
+                self.game_hub = GameHubClient(
+                    base_url=getattr(config, "GAME_HUB_BASE_URL", "http://127.0.0.1:8765"),
+                    timeout_total_seconds=float(getattr(config, "GAME_HUB_HTTP_TIMEOUT_TOTAL_SECONDS", 2.5)),
+                    timeout_connect_seconds=float(getattr(config, "GAME_HUB_HTTP_TIMEOUT_CONNECT_SECONDS", 0.6)),
                 )
-                logger.info("[KTANE] Game mode enabled (manual RAG ready)")
+                self.game_router = GameRouter(self.game_hub)
+                logger.info("[GameHub] enabled (HTTP client ready)")
             except Exception as e:
-                self.ktane_rag = None
-                logger.error(f"[KTANE] Failed to init manual RAG: {e}")
+                self.game_hub = None
+                self.game_router = None
+                logger.warning(f"[GameHub] init failed: {e}")
         self.tts = tts_handler(
             config.TTS_SERVER_URL,
             config.TTS_REFERENCE_FILE,
@@ -299,11 +301,7 @@ class ConversationController:
                     if full_response and full_response.strip():
                         self.history.add_ai_response(full_response)
                         self.last_response_time = time.time()
-                        # Avoid memory pollution in KTANE game mode by default
-                        if (not getattr(config, "KTANE_GAME_MODE_ENABLED", False)) or bool(
-                            getattr(config, "KTANE_MEMORY_SAVE_ENABLED", False)
-                        ):
-                            await self.memory_queue.put((pending.speaker, pending.message))
+                        await self.memory_queue.put((pending.speaker, pending.message))
                     else:
                         print("  [No response]")
                 finally:
@@ -631,55 +629,103 @@ class ConversationController:
             await player.drain()
             return tool_shortcut
 
-        # KTANE manual RAG context (text-only)
-        ktane_mode = bool(getattr(config, "KTANE_GAME_MODE_ENABLED", False))
-        ktane_context = ""
-        if ktane_mode and self.ktane_rag and last_user_msg:
-            try:
-                # Use a slightly broader query than the last utterance only.
-                # Users often say: "키패드야" then later "람다 같은 게 있어" etc.
-                recent_user_lines: list[str] = []
-                for msg in reversed(messages or []):
-                    if (msg.get("role") or "") != "user":
-                        continue
-                    content = (msg.get("content") or "").strip()
-                    if not content:
-                        continue
-                    # take last 3 lines from merged user content
-                    for ln in reversed(content.splitlines()):
-                        ln = (ln or "").strip()
-                        if not ln:
-                            continue
-                        if ": " in ln:
-                            _, ln = ln.split(": ", 1)
-                            ln = ln.strip()
-                        if ln:
-                            recent_user_lines.append(ln)
-                        if len(recent_user_lines) >= 3:
-                            break
-                    if len(recent_user_lines) >= 3:
-                        break
+        # ---------------------------
+        # Game routing (via GameHub)
+        # ---------------------------
+        session_id = "default"
+        try:
+            ch = getattr(vc, "channel", None)
+            cid = getattr(ch, "id", None) if ch else None
+            if cid is not None:
+                session_id = str(cid)
+        except Exception:
+            session_id = "default"
 
-                rag_query_text = "\n".join(reversed(recent_user_lines)).strip() or last_user_msg
-                rag_result = await asyncio.to_thread(self.ktane_rag.query, rag_query_text)
-                ktane_context = self.ktane_rag.format_context(
-                    rag_result,
-                    max_chars=int(getattr(config, "KTANE_RAG_MAX_CONTEXT_CHARS", 6000)),
+        # Build a small recent-turn list for GameHub (kept short to avoid noise)
+        recent_turns: list[str] = []
+        try:
+            tail = list(messages or [])[-6:]
+            for m in tail:
+                role = (m.get("role") or "").strip()
+                content = (m.get("content") or "").strip()
+                if not content:
+                    continue
+                if role == "assistant":
+                    recent_turns.append(f"{config.AI_NAME}: {content}")
+                else:
+                    recent_turns.append(content)
+        except Exception:
+            recent_turns = []
+
+        direct_action = None
+        system_addendum = ""
+        context_blocks: list[dict] = []
+        allowed_start_game_ids = set()
+        allow_stop_control = False
+        active_game_id = None
+        trace_id = ""
+
+        if self.game_router:
+            try:
+                direct_action, patch = await self.game_router.route(
+                    session_id=session_id,
+                    last_user_text=last_user_msg,
+                    recent_turns=recent_turns,
+                    active_game_id_hint=None,
                 )
+                active_game_id = patch.active_game_id
+                system_addendum = (patch.system_addendum or "").strip()
+                context_blocks = list(getattr(patch, "context_blocks", []) or [])
+                allowed_start_game_ids = set(patch.allowed_start_game_ids or set())
+                allow_stop_control = bool(patch.allow_stop)
+                trace_id = patch.trace_id or ""
             except Exception as e:
-                logger.warning(f"[KTANE] RAG query failed: {e}")
-                ktane_context = ""
+                logger.warning(f"[GameHub] route failed: {e}")
+
+        # If router wants a direct reply (forced start/stop), speak without calling the main LLM.
+        if direct_action and getattr(direct_action, "text", "").strip():
+            direct_text = str(getattr(direct_action, "text")).strip()
+            print(f"{config.AI_NAME}: {direct_text}")
+
+            tts_queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
+            tts_task = asyncio.create_task(self._tts_worker(tts_queue, player, run_token))
+            self._active_tts_task = tts_task
+            if run_token != self._run_token:
+                try:
+                    tts_task.cancel()
+                except Exception:
+                    pass
+                self._active_tts_task = None
+                return None
+
+            await tts_queue.put(direct_text)
+            await tts_queue.put(None)
+            try:
+                await tts_task
+            except asyncio.CancelledError:
+                self._active_tts_task = None
+                return None
+            finally:
+                if self._active_tts_task is tts_task:
+                    self._active_tts_task = None
+            await player.drain()
+            return direct_text
 
         # Long-term memory context
         memory_context = ""
-        if last_user_msg:
+        # Avoid polluting the prompt with long-term memory while a game is active (default).
+        if last_user_msg and (not active_game_id):
             memory_context = await asyncio.to_thread(
                 self.memory_manager.get_memory_context, last_user_msg, last_user_name
             )
             # NOTE:
-            # KTANE 모드에서도 장기기억을 그대로 주입합니다(요청사항).
-            # 프롬프트가 컨텍스트 한도를 초과하면 llm_interface의 재시도 로직이
-            # 자동으로 컨텍스트를 축소/드롭합니다.
+            # 프롬프트가 컨텍스트 한도를 초과하면 llm_interface에서 재시도/축소가 필요합니다.
+
+        # Attach trace_id to the system addendum (kept out of TTS).
+        if trace_id:
+            if system_addendum:
+                system_addendum += "\n\n"
+            system_addendum += f"[TRACE]\n{trace_id}"
 
         # TTS streaming: sentence queue
         full_response = ""
@@ -761,28 +807,81 @@ class ConversationController:
         tts_task = asyncio.create_task(self._tts_worker(tts_queue, player, run_token))
         self._active_tts_task = tts_task
 
+        # CONTROL line (game start/stop) parsing.
+        # We must NOT speak/store the CONTROL line, so we sniff the first line before emitting to TTS.
+        control_checked = False
+        control_buf = ""
+        control_cmd = None
+
         async for chunk in get_response_stream(
             messages=messages,
             participant_count=participant_count,
             memory_context=memory_context,
-            ktane_mode=ktane_mode,
-            ktane_context=ktane_context,
+            system_addendum=system_addendum,
+            context_blocks=context_blocks,
         ):
             if run_token != self._run_token:
                 break
             if not chunk:
                 continue
 
+            out = chunk
+
+            # 0) If this is the first line and it starts with CONTROL:, buffer until newline,
+            # then drop the CONTROL line (never speak it) and optionally record the command.
+            if not control_checked:
+                control_buf += out
+
+                if control_buf.lstrip().lower().startswith("control:"):
+                    # Wait for newline to complete the control line (short, one line).
+                    if "\n" not in control_buf and len(control_buf) < 200:
+                        continue
+
+                    first_line, _, rest = control_buf.partition("\n")
+                    control_buf = ""
+                    control_checked = True
+
+                    # Parse + validate START against allowed IDs. Always suppress the CONTROL line in output.
+                    cmd = parse_control_line(first_line, allowed_game_ids=allowed_start_game_ids)
+                    if cmd and cmd.action == ControlAction.STOP and not allow_stop_control:
+                        cmd = None
+                    control_cmd = cmd
+
+                    out = rest.lstrip("\n")
+                    if not out:
+                        continue
+                else:
+                    # Not a control line; flush buffered text as normal.
+                    control_checked = True
+                    out = control_buf
+                    control_buf = ""
+                    if not out:
+                        continue
+
             if first_chunk:
                 print(f"{config.AI_NAME}: ", end="", flush=True)
                 first_chunk = False
 
-            print(chunk, end="", flush=True)
-            full_response += chunk
-            buffer += chunk
+            print(out, end="", flush=True)
+            full_response += out
+            buffer += out
 
             # Drain buffer to TTS queue continuously (delimiter-based only)
             await _drain_buffer_to_tts_queue(force=False)
+
+        # If the stream ended before we could decide about CONTROL (rare), flush what we buffered.
+        if (not control_checked) and control_buf:
+            out = control_buf
+            control_checked = True
+            control_buf = ""
+            if out.strip():
+                if first_chunk:
+                    print(f"{config.AI_NAME}: ", end="", flush=True)
+                    first_chunk = False
+                print(out, end="", flush=True)
+                full_response += out
+                buffer += out
+                await _drain_buffer_to_tts_queue(force=False)
 
         if not first_chunk:
             print()
@@ -814,6 +913,16 @@ class ConversationController:
 
         # Important: response is not "done" until audio playback finishes.
         await player.drain()
+
+        # Apply CONTROL command (start/stop) after finishing the turn (before returning).
+        if run_token == self._run_token and self.game_hub and control_cmd:
+            try:
+                if control_cmd.action == ControlAction.START and getattr(control_cmd, "game_id", None):
+                    await self.game_hub.start_game(session_id, control_cmd.game_id)
+                elif control_cmd.action == ControlAction.STOP:
+                    await self.game_hub.stop_game(session_id)
+            except Exception as e:
+                logger.warning(f"[GameHub] CONTROL apply failed: {e}")
 
         if run_token != self._run_token:
             return None

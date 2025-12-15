@@ -98,6 +98,35 @@ We believe in **Configuration as Code**. All magic numbers are exposed in `confi
 
 ---
 
+## 🎮 GameHub (Game Modes)
+
+게임(예: KTANE)을 늘려도 **메인 LLM 코어 코드가 커지지 않도록**, 게임 로직은 별도의 HTTP 서비스 **GameHub**로 분리되어 있습니다.
+
+### 1) GameHub 실행
+
+아래 명령은 **`AiVutber/` 폴더에서 실행**하는 것을 기준으로 합니다.
+
+```bash
+uvicorn game_hub.server:app --host 127.0.0.1 --port 8765
+```
+
+### 2) 게임 시작/종료(음성/텍스트)
+
+- **LLM이 게임을 선택해서 시작**:
+  - `"LLM 어떤 게임할래?"`, `"LLM 게임하자"` 등
+  - LLM이 답변 첫 줄에 `CONTROL: START <game_id>`를 출력하면 자동으로 해당 게임이 시작됩니다(이 CONTROL 라인은 TTS로 읽지 않습니다).
+- **강제 시작/종료**:
+  - `"LLM ktane 시작해"`
+  - `"LLM ktane 종료해"`
+
+### 3) 새 게임 추가 템플릿
+
+1. `game_hub/games/<game_id>/plugin.py`에 플러그인 작성 (`info()`, `prepare_turn()`)
+2. `game_hub/server.py`에서 `registry.register(...)`로 등록
+3. 메인 코어는 수정 없이 GameHub에서 패치(system_addendum/context_blocks)를 받아 동작합니다.
+
+---
+
 ## 🧩 Troubleshooting
 
 **Q: The bot joins but doesn't transcribe.**

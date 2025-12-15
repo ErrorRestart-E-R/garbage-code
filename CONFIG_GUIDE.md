@@ -33,6 +33,41 @@ config.py의 각 설정 옵션에 대한 상세 설명입니다.
 
 ## LLM 설정
 
+---
+
+## GameHub (게임 모드) 설정
+
+게임(예: KTANE)을 메인 코어에서 분리하기 위해, GameHub를 **별도 HTTP 서비스**로 실행합니다.
+메인 코어는 GameHub에서 `system_addendum`/`context_blocks`를 받아서 LLM 호출에 주입합니다.
+
+### GAME_HUB_ENABLED
+- **기능**: GameHub 연동 ON/OFF
+- **값**: True/False
+- **설명**: False면 게임 라우팅/게임 패치 주입을 하지 않습니다.
+
+### GAME_HUB_BASE_URL
+- **기능**: GameHub HTTP 주소
+- **기본**: `http://127.0.0.1:8765`
+- **설명**: GameHub를 다른 PC/포트에서 돌릴 경우 여기를 변경합니다.
+
+### GAME_HUB_HTTP_TIMEOUT_TOTAL_SECONDS / GAME_HUB_HTTP_TIMEOUT_CONNECT_SECONDS
+- **기능**: GameHub 호출 타임아웃(전체/연결)
+- **설명**: GameHub가 다운되었을 때 메인 코어가 멈추지 않도록 짧게 설정하는 것을 권장합니다.
+
+### GAME_HUB_RAG_MAX_CONTEXT_CHARS
+- **기능**: GameHub에서 받은 컨텍스트 블록을 시스템 프롬프트에 주입할 때의 최대 문자 수
+- **설명**: 너무 크게 잡으면 llama.cpp 컨텍스트 초과가 발생할 수 있습니다.
+
+### LLM_MAX_HISTORY_MESSAGES_ON_OVERFLOW
+- **기능**: llama.cpp가 컨텍스트 초과를 반환할 때 재시도 시 남길 대화 히스토리 메시지 수
+- **설명**: 작게 잡을수록 안정적이지만 맥락이 줄어듭니다.
+
+### 게임 시작/종료 발화(권장)
+- `"LLM 어떤 게임할래?"`, `"LLM 게임하자"`: LLM이 선택해서 시작
+- `"LLM <게임명> 시작해/종료해"`: 강제 시작/종료
+
+> 참고: 기존 `KTANE_*` 설정은 **레거시(구형) 경로**로 남아 있을 수 있으며, 현재 게임 모드는 GameHub 플러그인(`game_hub/games/...`) 기준으로 확장하는 것을 권장합니다.
+
 ### LLM_RESPONSE_TEMPERATURE
 - 기능: LLM 출력의 랜덤성을 조절합니다. 다음 토큰 선택 시 확률 분포를 조정합니다.
 - 범위: 0.0 ~ 2.0 (기본값: 0.8)

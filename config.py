@@ -55,6 +55,19 @@ LLM_RESPONSE_TOP_K = 40             # 상위 K개 토큰만 샘플링
 LLM_RESPONSE_REPEAT_PENALTY = 1.05  # 반복 페널티 (1.0=없음)
 
 # ============================================================================
+# 5.5. KTANE 모드 전용 응답 파라미터 (결정성/정확도 우선)
+# ============================================================================
+# KTANE(폭탄 해체)에서는 규칙 적용이 핵심이라, 일반 잡담보다 temperature를 낮추는 편이 안전합니다.
+# llama.cpp 서버/모델에 따라 값은 튜닝 포인트입니다.
+KTANE_LLM_TEMPERATURE = 0.2
+KTANE_LLM_TOP_P = 0.9
+KTANE_LLM_TOP_K = 40
+KTANE_LLM_REPEAT_PENALTY = 1.05
+
+# KTANE 모드에서 컨텍스트가 커져 llama.cpp가 거절할 때를 대비한 히스토리 트림 기준(메시지 개수)
+KTANE_MAX_HISTORY_MESSAGES = 4
+
+# ============================================================================
 # 6. 대화 흐름 제어
 # ============================================================================
 # 대화 기록
@@ -80,6 +93,21 @@ BARGE_IN_IGNORE_REGEX = ""
 # MCP 도구 호출
 # - get_current_time / get_weather / calculate 등 "사실 기반" 응답은 툴로 처리하는 편이 안전합니다.
 ENABLE_MCP_TOOLS = True  # MCP 도구 호출 활성화/비활성화
+
+# ============================================================================
+# 6.2. GAME HUB (HTTP) - 게임 모드 플러그인 서비스
+# ============================================================================
+# 메인 코어는 GameHub에 HTTP로 연결해 게임별 프롬프트 패치(system_addendum/context_blocks)를 받습니다.
+# GameHub는 별도 프로세스로 실행됩니다.
+GAME_HUB_ENABLED = True
+GAME_HUB_BASE_URL = "http://127.0.0.1:8765"
+GAME_HUB_HTTP_TIMEOUT_TOTAL_SECONDS = 2.5
+GAME_HUB_HTTP_TIMEOUT_CONNECT_SECONDS = 0.6
+# GameHub에서 가져온 컨텍스트 블록을 시스템 프롬프트에 주입할 때의 최대 문자 수
+GAME_HUB_RAG_MAX_CONTEXT_CHARS = 6000
+
+# llama.cpp가 컨텍스트 초과를 반환할 때, 자동 재시도 시 남길 대화 히스토리 메시지 수
+LLM_MAX_HISTORY_MESSAGES_ON_OVERFLOW = 10
 
 # ============================================================================
 # 6.25. GAME MODE: Keep Talking and Nobody Explodes (KTANE) - Manual RAG
@@ -110,6 +138,10 @@ KTANE_EMBEDDING_MODEL = "embeddinggemma:latest"
 # 게임 모드에서는 잡담/개인정보 메모리 시스템에 게임 내용이 섞이지 않도록 기본적으로 저장을 끕니다.
 # (필요하면 True로 바꾸세요.)
 KTANE_MEMORY_SAVE_ENABLED = True
+
+# KTANE 모드에서 장기기억( Mem0 ) 컨텍스트를 시스템 프롬프트에 주입할지 여부
+# - 기본 False 권장: 과거 오답/잡담이 규칙 적용을 오염시키는 것을 방지
+KTANE_INJECT_LONG_TERM_MEMORY = False
 
 # ============================================================================
 # 6.5. VTube Studio (VTS) 연동 - Lip Sync

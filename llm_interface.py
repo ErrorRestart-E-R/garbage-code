@@ -156,8 +156,8 @@ async def get_response_stream(
     messages: List[Dict[str, str]],
     participant_count: int = 1,
     memory_context: str = "",
-    ktane_mode: bool = False,
-    ktane_context: str = "",
+    system_addendum: str = "",
+    context_blocks: Optional[List[Dict[str, str]]] = None,
 ) -> AsyncGenerator[Optional[str], None]:
     """
     Single LLM handles both judgment and response generation.
@@ -172,163 +172,214 @@ async def get_response_stream(
                  [{"role": "user"/"assistant", "content": "..."}]
         participant_count: Number of human participants (for context)
         memory_context: Long-term memory context (optional)
+        system_addendum: Additional system instructions (per-turn, e.g. game mode rules)
+        context_blocks: Optional list of context blocks ({"title": "...", "content": "..."})
         
     Yields:
         Response text chunks (empty if LLM decides not to respond)
     """
-    try:
-        # OpenAI Python SDK 권장: 단일 클라이언트로 요청 (base_url로 OpenAI-compatible 서버 사용)
-        client = AsyncOpenAI(base_url=config.LLAMA_CPP_BASE_URL, api_key=config.LLAMA_CPP_API_KEY)
-        tools = mcp_library.get_tools() if _should_enable_llm_tools(messages) else None
-        
-        # Build system prompt with participant count context
-        system_base = config.SYSTEM_PROMPT.format(
-            ai_name=config.AI_NAME,
-            participant_count=participant_count
-        )
+    max_attempts = 2
+    attempt = 0
+    last_error: Optional[Exception] = None
 
-        def _build_system_content(mem_ctx: str, kt_mode: bool, kt_ctx: str) -> str:
-            sc = system_base
-        
-        # Add long-term memory if available
-            if mem_ctx:
-                sc += f"\n\n[LONG-TERM MEMORY]\n{mem_ctx}"
+    # Local copies; we may shrink on retry.
+    mem_ctx = memory_context or ""
+    addendum = (system_addendum or "").strip()
+    blocks = list(context_blocks or [])
+    ctx_text = ""
+    trimmed_messages: Optional[List[Dict[str, str]]] = None
 
-            # KTANE game mode: rely on injected manual context, do not guess.
-            if kt_mode:
-                sc += (
-                    "\n\n[KTANE GAME MODE]\n"
-                    "- You are assisting with the game 'KEEP TALKING and NOBODY EXPLODES'.\n"
-                    "- The user describes what they see on the bomb in Korean.\n"
-                    "- You MUST rely only on the provided [KTANE MANUAL CONTEXT] text for defusal rules.\n"
-                    "- If the context is missing or insufficient, ask 1-2 short clarifying questions.\n"
-                    "- Never guess rules from general knowledge when KTANE mode is on.\n"
-                    "- In KTANE mode, ALWAYS respond to the latest user message. Do not stay silent.\n"
-                    "- In KTANE mode, NEVER output an empty response.\n"
-                    "- Users may describe things inaccurately/colloquially. Map their description to the closest term/alias found in the manual context.\n"
-                    "- If multiple candidates fit, ask a single short disambiguation question.\n"
-                    "\n"
-                    "[KTANE OUTPUT RULES]\n"
-                    "- Do NOT explain how you found the rule.\n"
-                    "- Do NOT quote or paraphrase the manual/context.\n"
-                    "- Do NOT mention '매뉴얼', '문서', 'RAG', '컨텍스트' in your reply.\n"
-                    "- Output only the final actionable instruction(s) the defuser must do now.\n"
-                    "- For Keypads/키패드: if you don't have all 4 symbols with positions (좌상/우상/좌하/우하), ask for them.\n"
-                    "- For Keypads/키패드 final answer: output press order as positions only (e.g., '좌상 -> 우하 -> ...').\n"
-                )
-                if kt_ctx and kt_ctx.strip():
-                    sc += f"\n\n[KTANE MANUAL CONTEXT]\n{kt_ctx.strip()}"
+    def _format_context_blocks(
+        blocks2: List[Dict[str, str]],
+        max_chars: int = 6000,
+        max_chars_per_block: int = 900,
+    ) -> str:
+        if not blocks2:
+            return ""
+        budget = max(500, int(max_chars))
+        per = max(200, int(max_chars_per_block))
+        parts: list[str] = []
+        used = 0
+        for b in blocks2:
+            try:
+                title = str(b.get("title") or "").strip()
+                content = str(b.get("content") or "").strip()
+            except Exception:
+                continue
+            if not content:
+                continue
+            if len(content) > per:
+                content = content[:per].rstrip()
+            header = f"[title={title}]" if title else "[context]"
+            block_txt = f"{header}\n{content}".strip()
+            if used + len(block_txt) + 2 > budget and parts:
+                break
+            parts.append(block_txt)
+            used += len(block_txt) + 2
+        return "\n\n---\n\n".join(parts).strip()
 
-            return sc
-        
-        normalized_messages = _normalize_messages_for_llama(messages)
+    ctx_text = _format_context_blocks(
+        blocks,
+        max_chars=int(getattr(config, "GAME_HUB_RAG_MAX_CONTEXT_CHARS", 6000)),
+    )
 
-        system_content = _build_system_content(memory_context, ktane_mode, ktane_context)
+    while attempt < max_attempts:
+        attempt += 1
+        try:
+            # OpenAI Python SDK 권장: 단일 클라이언트로 요청 (base_url로 OpenAI-compatible 서버 사용)
+            client = AsyncOpenAI(base_url=config.LLAMA_CPP_BASE_URL, api_key=config.LLAMA_CPP_API_KEY)
+            tools = mcp_library.get_tools() if _should_enable_llm_tools(trimmed_messages or messages) else None
 
-        # Build final messages list: system + conversation history
-        final_messages = [{"role": "system", "content": system_content}] + normalized_messages
-        
-        logger.debug(f"LLM request: {len(messages)} messages, {participant_count} participants")
-        
-        # Streaming request (OpenAI format with llama.cpp extra_body)
-        chat_kwargs = {
-            "model": config.LLM_MODEL_NAME,
-            "messages": final_messages,
-            "stream": True,
-            "temperature": config.LLM_RESPONSE_TEMPERATURE,
-            "top_p": config.LLM_RESPONSE_TOP_P,
-            "extra_body": {
-                "top_k": config.LLM_RESPONSE_TOP_K,
-                "repeat_penalty": config.LLM_RESPONSE_REPEAT_PENALTY,
-            }
-        }
-        if tools:
-            chat_kwargs["tools"] = tools
-        
-        tool_calls_accumulated: list[dict] = []
-        content_buffer = ""
-        has_yielded = False
-        
-        # Create stream (no automatic retry/trim on context overflow)
-        stream = await client.chat.completions.create(**chat_kwargs)
-
-        async for chunk in stream:
-            # Extract content from streaming chunk
-            delta = chunk.choices[0].delta if chunk.choices else None
-            if delta:
-                content = delta.content or ""
-                
-                # Check for tool calls (accumulated across chunks)
-                if delta.tool_calls:
-                    for tc in delta.tool_calls:
-                        # Accumulate tool call information
-                        if tc.index >= len(tool_calls_accumulated):
-                            tool_calls_accumulated.append({
-                                "id": tc.id or "",
-                                "function": {"name": "", "arguments": ""}
-                            })
-                        if tc.function:
-                            if tc.function.name:
-                                tool_calls_accumulated[tc.index]["function"]["name"] = tc.function.name
-                            if tc.function.arguments:
-                                tool_calls_accumulated[tc.index]["function"]["arguments"] += tc.function.arguments
-                
-                if content:
-                    content_buffer += content
-                    has_yielded = True
-                    yield content
-                    
-        if tool_calls_accumulated:
-            tool_lines: list[str] = []
-            for tool_call in tool_calls_accumulated:
-                func_name = tool_call["function"]["name"]
-                func_args_str = tool_call["function"]["arguments"]
-
-                try:
-                    func_args = json.loads(func_args_str) if func_args_str else {}
-                except json.JSONDecodeError:
-                    func_args = {}
-
-                if not func_name:
-                    continue
-
-                logger.debug(f"Tool call: {func_name}({func_args})")
-                tool_result = mcp_library.execute_tool(func_name, func_args)
-                logger.debug(f"Tool result: {tool_result}")
-
-                # Keep this compact — it gets injected into system prompt.
-                try:
-                    args_repr = json.dumps(func_args, ensure_ascii=False)
-                except Exception:
-                    args_repr = str(func_args)
-                tool_lines.append(f"- {func_name}({args_repr}): {tool_result}")
-
-            # Inject tool results into the system message (single system message only)
-            system_with_tools = system_content
-            if tool_lines:
-                # Internal-only: tool results must NOT be repeated in assistant output
-                system_with_tools += "\n\n<tool_results>\n" + "\n".join(tool_lines) + "\n</tool_results>"
-
-            # Re-run generation WITHOUT adding tool-role messages to keep strict alternation
-            messages_with_tools = [{"role": "system", "content": system_with_tools}] + normalized_messages
-            stream = await client.chat.completions.create(
-                model=config.LLM_MODEL_NAME,
-                messages=messages_with_tools,
-                stream=True,
-                temperature=config.LLM_RESPONSE_TEMPERATURE,
-                top_p=config.LLM_RESPONSE_TOP_P,
-                extra_body={
-                    "top_k": config.LLM_RESPONSE_TOP_K,
-                    "repeat_penalty": config.LLM_RESPONSE_REPEAT_PENALTY,
-                },
+            # Build system prompt with participant count context
+            system_base = config.SYSTEM_PROMPT.format(
+                ai_name=config.AI_NAME,
+                participant_count=participant_count
             )
+
+            def _build_system_content(mem_ctx2: str, addendum2: str, ctx_text2: str) -> str:
+                sc = system_base
+
+                # Add long-term memory if available
+                if mem_ctx2:
+                    sc += f"\n\n[LONG-TERM MEMORY]\n{mem_ctx2}"
+
+                # Per-turn system addendum (e.g., game mode rules)
+                if addendum2:
+                    sc += f"\n\n[SYSTEM ADDENDUM]\n{addendum2}"
+
+                # Additional context blocks (e.g., retrieved manual chunks)
+                if ctx_text2:
+                    sc += f"\n\n[CONTEXT BLOCKS]\n{ctx_text2}"
+
+                return sc
+
+            normalized_messages = trimmed_messages or _normalize_messages_for_llama(messages)
+            system_content = _build_system_content(mem_ctx, addendum, ctx_text)
+
+            # Build final messages list: system + conversation history
+            final_messages = [{"role": "system", "content": system_content}] + normalized_messages
+            logger.debug(f"LLM request: {len(messages)} messages, {participant_count} participants")
+
+            # Streaming request (OpenAI format with llama.cpp extra_body)
+            temperature = config.LLM_RESPONSE_TEMPERATURE
+            top_p = config.LLM_RESPONSE_TOP_P
+            top_k = config.LLM_RESPONSE_TOP_K
+            repeat_penalty = config.LLM_RESPONSE_REPEAT_PENALTY
+
+            chat_kwargs = {
+                "model": config.LLM_MODEL_NAME,
+                "messages": final_messages,
+                "stream": True,
+                "temperature": temperature,
+                "top_p": top_p,
+                "extra_body": {
+                    "top_k": top_k,
+                    "repeat_penalty": repeat_penalty,
+                }
+            }
+            if tools:
+                chat_kwargs["tools"] = tools
+
+            tool_calls_accumulated: list[dict] = []
+            content_buffer = ""
+            has_yielded = False
+
+            # Create stream
+            stream = await client.chat.completions.create(**chat_kwargs)
+
             async for chunk in stream:
+                # Extract content from streaming chunk
                 delta = chunk.choices[0].delta if chunk.choices else None
-                if delta and delta.content:
-                    has_yielded = True
-                    yield delta.content
-                    
-    except Exception as e:
-        logger.error(f"Response stream error: {e}")
-        yield None
+                if delta:
+                    content = delta.content or ""
+
+                    # Check for tool calls (accumulated across chunks)
+                    if delta.tool_calls:
+                        for tc in delta.tool_calls:
+                            # Accumulate tool call information
+                            if tc.index >= len(tool_calls_accumulated):
+                                tool_calls_accumulated.append({
+                                    "id": tc.id or "",
+                                    "function": {"name": "", "arguments": ""}
+                                })
+                            if tc.function:
+                                if tc.function.name:
+                                    tool_calls_accumulated[tc.index]["function"]["name"] = tc.function.name
+                                if tc.function.arguments:
+                                    tool_calls_accumulated[tc.index]["function"]["arguments"] += tc.function.arguments
+
+                    if content:
+                        content_buffer += content
+                        has_yielded = True
+                        yield content
+
+            if tool_calls_accumulated:
+                tool_lines: list[str] = []
+                for tool_call in tool_calls_accumulated:
+                    func_name = tool_call["function"]["name"]
+                    func_args_str = tool_call["function"]["arguments"]
+
+                    try:
+                        func_args = json.loads(func_args_str) if func_args_str else {}
+                    except json.JSONDecodeError:
+                        func_args = {}
+
+                    if not func_name:
+                        continue
+
+                    logger.debug(f"Tool call: {func_name}({func_args})")
+                    tool_result = mcp_library.execute_tool(func_name, func_args)
+                    logger.debug(f"Tool result: {tool_result}")
+
+                    # Keep this compact — it gets injected into system prompt.
+                    try:
+                        args_repr = json.dumps(func_args, ensure_ascii=False)
+                    except Exception:
+                        args_repr = str(func_args)
+                    tool_lines.append(f"- {func_name}({args_repr}): {tool_result}")
+
+                # Inject tool results into the system message (single system message only)
+                system_with_tools = system_content
+                if tool_lines:
+                    # Internal-only: tool results must NOT be repeated in assistant output
+                    system_with_tools += "\n\n<tool_results>\n" + "\n".join(tool_lines) + "\n</tool_results>"
+
+                # Re-run generation WITHOUT adding tool-role messages to keep strict alternation
+                messages_with_tools = [{"role": "system", "content": system_with_tools}] + normalized_messages
+                stream = await client.chat.completions.create(
+                    model=config.LLM_MODEL_NAME,
+                    messages=messages_with_tools,
+                    stream=True,
+                    temperature=temperature,
+                    top_p=top_p,
+                    extra_body={
+                        "top_k": top_k,
+                        "repeat_penalty": repeat_penalty,
+                    },
+                )
+                async for chunk in stream:
+                    delta = chunk.choices[0].delta if chunk.choices else None
+                    if delta and delta.content:
+                        has_yielded = True
+                        yield delta.content
+
+            # Success: stop generator
+            return
+
+        except Exception as e:
+            last_error = e
+            # Context overflow: trim and retry once.
+            if _is_exceed_context_size_error(e) and attempt < max_attempts:
+                mem_ctx = ""
+                if ctx_text and len(ctx_text) > 2000:
+                    ctx_text = ctx_text[:2000]
+                base_norm = _normalize_messages_for_llama(messages)
+                keep_n = int(getattr(config, "LLM_MAX_HISTORY_MESSAGES_ON_OVERFLOW", 10))
+                trimmed_messages = _trim_messages_keep_last(base_norm, keep_n)
+                continue
+
+            logger.error(f"Response stream error: {e}")
+            break
+
+    yield None
 
