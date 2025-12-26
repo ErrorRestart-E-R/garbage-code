@@ -204,7 +204,8 @@ MEM0_CONFIG = {
         "provider": "ollama",
         "config": {
             "model": MEMORY_LLM_MODEL,
-            "temperature": 0.5,
+            # Fact extraction should be deterministic to avoid duplicated / hallucinated facts.
+            "temperature": 0.0,
             "max_tokens": 512,
             "ollama_base_url": OLLAMA_LLM_URL,
         },
@@ -232,6 +233,8 @@ JSON 규칙(중요):
 추출 규칙:
 - "facts" 값은 문자열 리스트여야 한다.
 - 저장할 내용이 없으면 반드시 {"facts": []} 를 출력한다.
+- facts 내에서 같은 내용은 절대 중복하지 않는다(중복 fact는 1개만).
+- 질문/요청/명령문(예: "?","알려줘","기억해")은 저장하지 않는다: {"facts": []}
 - 사용자에 대한 '지속적으로 유효한 정보'만 저장한다:
   - 개인 정보: 이름, 생일/기념일, 관계
   - 선호/싫어함: 음식/취미/취향/알레르기 등

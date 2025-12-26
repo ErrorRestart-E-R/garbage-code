@@ -151,25 +151,50 @@ class MemoryManager:
                 if isinstance(result, dict):
                     stored_items = list(result.get("results", []) or [])
 
-                saved_texts: list[str] = []
+                # Extract (memory_text, memory_id) pairs
+                extracted: list[tuple[str, str]] = []
                 for item in stored_items:
                     if not isinstance(item, dict):
                         continue
-                    # Try common keys used by mem0
+                    # Common response fields: {"id": "...", "memory": "...", "event": "ADD"}
+                    mid = str(item.get("id") or item.get("memory_id") or "").strip()
                     m = item.get("memory") or item.get("text") or item.get("fact") or ""
                     m = str(m).strip() if m is not None else ""
                     if m:
+                        extracted.append((m, mid))
+
+                # If mem0 produced duplicate memories in a single add(), delete duplicates (keep first).
+                # This prevents DB pollution and also fixes repeated terminal prints.
+                try:
+                    seen: dict[str, str] = {}
+                    dup_ids: list[str] = []
+                    for m, mid in extracted:
+                        if m not in seen:
+                            seen[m] = mid
+                            continue
+                        # duplicate
+                        if mid:
+                            dup_ids.append(mid)
+
+                    # Best-effort delete duplicates immediately
+                    for mid in dup_ids:
+                        try:
+                            # mem0 OSS supports delete(memory_id)
+                            self.memory.delete(mid)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                # Build de-duplicated text list for printing (keep order)
+                saved_texts: list[str] = []
+                for m, _mid in extracted:
+                    if m not in saved_texts:
                         saved_texts.append(m)
 
                 # Terminal output (Korean)
                 print("저장 완료")
                 print(f"입력 문장: {text.strip()}")
-                # De-duplicate for readability (keep order)
-                if saved_texts:
-                    try:
-                        saved_texts = list(dict.fromkeys(saved_texts))
-                    except Exception:
-                        pass
                 if saved_texts:
                     for s in saved_texts:
                         print(f"저장된 문장: {s}")
