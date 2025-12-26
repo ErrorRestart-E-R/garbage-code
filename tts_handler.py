@@ -8,7 +8,6 @@ from logger import setup_logger
 
 logger = setup_logger(__name__, config.LOG_FILE, config.LOG_LEVEL)
 
-
 def _wav_duration_seconds(wav_bytes: bytes) -> float:
     """
     Best-effort WAV duration estimator for latency/RTF logging.
