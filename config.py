@@ -185,117 +185,11 @@ VTS_LIPSYNC_MAX = 1.0
 # 7. 메모리 시스템 (Mem0 + Ollama)
 # ============================================================================
 ENABLE_MEMORY = True  # 메모리 시스템 활성화/비활성화
-# AI(봇) 자체에 대한 정보(선호/취향/이름 등)도 장기메모리에 저장/검색할지
-# - 예: 유저가 "너가 좋아하는 과일은 뭐야?" → 봇이 "수박"이라고 답하면, 그 답변을 AI_NAME 유저로 저장
-MEMORY_SAVE_ASSISTANT_FACTS = True
-MEMORY_INCLUDE_ASSISTANT_CONTEXT = True
-
-# 장기 기억 저장 정책
-# - "heuristic": 기존처럼 간단한 키워드 규칙으로만 저장(빠르고 보수적)
-# - "reflect": 매 턴(user+assistant) 내용을 LLM이 보고 중요도를 판단해 저장(인격체/추억 지향)
-MEMORY_SAVE_MODE = "reflect"  # "heuristic" | "reflect"
-
-# (reflect 모드) 원문(turn)을 그대로도 저장할지 (infer=False, 일종의 '대화 일기/로그' 용도)
-MEMORY_STORE_RAW_TURNS = True
-
-# (reflect 모드) 유저/봇 턴을 보고 "저장할 기억(facts)"을 뽑는 프롬프트
-# - 반드시 {"facts":[...]} JSON 1개만 출력해야 합니다.
-# - 비중요하면 {"facts": []}
-MEMORY_TURN_REFLECTION_PROMPT_USER = r"""
-너는 대화형 AI의 장기기억 시스템이다.
-아래는 한 턴의 대화(사용자 발화 + 어시스턴트 응답)이다.
-
-목표:
-- 이 한 턴에서 "미래 대화에 도움이 되는 중요한 기억"만 0~3개 추출해 저장한다.
-- 중요하지 않으면 빈 배열로 저장한다.
-
-저장 대상(예시):
-- 사용자의 지속적인 정보: 이름/관계/직업/사는곳/취미/선호/싫어함/알레르기/목표/계획/자주 쓰는 설정
-- 관계/에피소드: "처음 만남", "같이 무언가를 했다", "약속/규칙을 정했다", "중요한 사건을 공유했다"
-- 대화 규칙: 사용자가 원하는 말투/호칭/금지 주제 등
-
-저장 금지:
-- 일반 상식/일시적 잡담/그냥 질문만 있고 정보가 없는 경우
-- 추측/환각/근거 없는 내용
-
-출력 형식(엄수):
-{"facts": ["..."]}
-
-문장 작성 규칙:
-- 반드시 한국어
-- 한 문장당 한 사실
-- 가능하면 주어를 명확히(예: "{user_name}은/는 ...")
-
-대화:
-[USER]
-{user_name}: {user_text}
-
-[ASSISTANT]
-{ai_name}: {assistant_text}
-""".strip()
-
-MEMORY_TURN_REFLECTION_PROMPT_ASSISTANT = r"""
-너는 대화형 AI의 "자기 정체성/선호" 장기기억 시스템이다.
-아래 한 턴의 대화에서, 어시스턴트({ai_name}) 본인에 대해 장기적으로 유지될 만한 사실만 0~2개 추출한다.
-
-저장 대상(예시):
-- "{ai_name}은/는 수박을 좋아한다" 같은 선호/싫어함/취향
-- "{ai_name}의 이름/호칭/말투 규칙" 같은 정체성/규칙
-
-저장 금지:
-- 사용자가 말한 사실(사용자 정보)
-- 일반 지식/그 순간만의 답변/불확실한 추측
-
-출력 형식(엄수):
-{"facts": ["..."]}
-
-문장 작성 규칙:
-- 반드시 한국어
-- 주어는 반드시 "{ai_name}은/는"으로 시작
-
-대화:
-[USER]
-{user_name}: {user_text}
-
-[ASSISTANT]
-{ai_name}: {assistant_text}
-""".strip()
-
 MEMORY_DB_PATH = "./memory_db"
 MEMORY_LLM_MODEL = "granite3.3:2b"
 MEMORY_EMBEDDING_MODEL = "embeddinggemma:latest"
 OLLAMA_LLM_URL = "http://localhost:11434"
 OLLAMA_EMBEDDING_URL = "http://192.168.45.28:11434"
-
-# mem0가 "기억 추출/중요도 판단"에 사용하는 LLM 백엔드
-# - "ollama": 기존처럼 Ollama를 사용 (MEMORY_LLM_MODEL, OLLAMA_LLM_URL 사용)
-# - "llama_cpp": llama.cpp(OpenAI-compatible) 메인 LLM 서버를 사용 (LLAMA_CPP_BASE_URL 사용)
-MEMORY_LLM_BACKEND = "llama_cpp"  # "ollama" | "llama_cpp"
-
-# Build mem0 LLM config depending on backend
-_MEM0_LLM_CONFIG = None
-if str(MEMORY_LLM_BACKEND).strip().lower() == "llama_cpp":
-    # Use Mem0's lmstudio provider (OpenAI-compatible base URL) to talk to llama.cpp
-    # NOTE: llama.cpp server may ignore model name, but mem0 requires a string.
-    _MEM0_LLM_CONFIG = {
-        "provider": "lmstudio",
-        "config": {
-            "model": LLM_MODEL_NAME,
-            "temperature": 0.2,
-            "max_tokens": 512,
-            "lmstudio_base_url": LLAMA_CPP_BASE_URL,
-        },
-    }
-else:
-    _MEM0_LLM_CONFIG = {
-        "provider": "ollama",
-        "config": {
-            "model": MEMORY_LLM_MODEL,
-            "temperature": 0.5,
-            "max_tokens": 512,
-            "ollama_base_url": OLLAMA_LLM_URL,
-        },
-    }
 
 MEM0_CONFIG = {
     "version": "v1.1",
@@ -306,7 +200,15 @@ MEM0_CONFIG = {
             "path": MEMORY_DB_PATH,
         },
     },
-    "llm": _MEM0_LLM_CONFIG,
+    "llm": {
+        "provider": "ollama",
+        "config": {
+            "model": MEMORY_LLM_MODEL,
+            "temperature": 0.5,
+            "max_tokens": 512,
+            "ollama_base_url": OLLAMA_LLM_URL,
+        },
+    },
     "embedder": {
         "provider": "ollama",
         "config": {
@@ -447,6 +349,8 @@ TTS_BATCH_SIZE = 8
 TTS_SPEED_FACTOR = 1.2
 TTS_PARALLEL_INFER = False
 
+TTS_LOG_LATENCY = False
+
 # TTS HTTP 클라이언트 설정
 TTS_HTTP_TIMEOUT_TOTAL_SECONDS = 120.0
 TTS_HTTP_TIMEOUT_CONNECT_SECONDS = 10.0
@@ -471,7 +375,6 @@ LOG_FILE = None           # "bot.log"로 설정하면 파일에 로그 저장
 # - True: 각 턴 종료 시 한 줄 요약 로그 출력 + mem0 저장 시 별도 한 줄 로그 출력
 # - False: 레이턴시 요약 로그 비활성화
 PIPELINE_METRICS_ENABLED = True
-TTS_LOG_LATENCY = False
 
 # ============================================================================
 # 11. 프롬프트

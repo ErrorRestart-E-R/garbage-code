@@ -416,37 +416,8 @@ class ConversationController:
                     if full_response and full_response.strip():
                         self.history.add_ai_response(full_response)
                         self.last_response_time = time.time()
-
-                        # Memory saving policy
-                        save_mode = str(getattr(config, "MEMORY_SAVE_MODE", "heuristic") or "heuristic").strip().lower()
-                        enq_ts = time.perf_counter()
-                        if save_mode == "reflect":
-                            # Let the LLM decide what is important to store from the full turn (user+assistant).
-                            ai_name = str(getattr(config, "AI_NAME", "LLM") or "LLM").strip()
-                            await self.memory_queue.put(
-                                {
-                                    "kind": "turn_reflection",
-                                    "turn_id": pending.message_index,
-                                    "user_name": pending.speaker,
-                                    "user_text": pending.message,
-                                    "assistant_name": ai_name,
-                                    "assistant_text": full_response.strip(),
-                                    "enq_ts": enq_ts,
-                                }
-                            )
-                        else:
-                            # Backward compatible (heuristic): store only when likely useful.
-                            await self.memory_queue.put((pending.message_index, pending.speaker, pending.message, enq_ts))
-
-                            # (heuristic) save assistant's own durable facts
-                            try:
-                                if bool(getattr(config, "MEMORY_SAVE_ASSISTANT_FACTS", True)):
-                                    if self.memory_manager.should_save_assistant_memory(pending.message, full_response):
-                                        ai_name = str(getattr(config, "AI_NAME", "LLM") or "LLM").strip()
-                                        ai_text = f"{ai_name}: {full_response.strip()}"
-                                        await self.memory_queue.put((pending.message_index, ai_name, ai_text, time.perf_counter()))
-                            except Exception:
-                                pass
+                        # Include turn_id + enqueue timestamp for latency accounting (best-effort)
+                        await self.memory_queue.put((pending.message_index, pending.speaker, pending.message, time.perf_counter()))
                     else:
                         print("  [No response]")
                 finally:
@@ -518,43 +489,6 @@ class ConversationController:
         while True:
             try:
                 item = await self.memory_queue.get()
-                # New: turn reflection job (dict)
-                if isinstance(item, dict) and item.get("kind") == "turn_reflection":
-                    turn_id = item.get("turn_id", None)
-                    user_name = str(item.get("user_name", "") or "")
-                    user_text = str(item.get("user_text", "") or "")
-                    assistant_name = str(item.get("assistant_name", "") or "")
-                    assistant_text = str(item.get("assistant_text", "") or "")
-                    enq_ts = item.get("enq_ts", None)
-                    meta = item.get("metadata", None)
-
-                    t0 = time.perf_counter()
-                    try:
-                        await asyncio.to_thread(
-                            self.memory_manager.save_turn_reflection,
-                            turn_id,
-                            user_name,
-                            user_text,
-                            assistant_name,
-                            assistant_text,
-                            meta if isinstance(meta, dict) else None,
-                        )
-                    except Exception as e:
-                        logger.error(f"Memory turn_reflection error: {e}")
-                    dt = time.perf_counter() - t0
-                    try:
-                        if bool(getattr(config, "PIPELINE_METRICS_ENABLED", True)):
-                            qd = None
-                            if isinstance(enq_ts, (int, float)) and enq_ts > 0:
-                                qd = max(0.0, float(t0) - float(enq_ts))
-                            qd_str = f"{qd:.2f}s" if isinstance(qd, (int, float)) else "?"
-                            logger.info(f"[PIPELINE][MEM] turn={turn_id} queue={qd_str} reflect={dt:.2f}s")
-                    except Exception:
-                        pass
-
-                    self.memory_queue.task_done()
-                    continue
-
                 # Backward compatible: support both (user_name, user_text) and (turn_id, user_name, user_text, enq_ts)
                 turn_id = None
                 user_name = ""
@@ -970,37 +904,9 @@ class ConversationController:
         # Avoid polluting the prompt with long-term memory while a game is active (default).
         if last_user_msg and (not active_game_id):
             t0 = time.perf_counter()
-            mem_parts: list[str] = []
-
-            # 1) User memory (always, when enabled)
-            user_ctx = await asyncio.to_thread(
+            memory_context = await asyncio.to_thread(
                 self.memory_manager.get_memory_context, last_user_msg, last_user_name
             )
-            if user_ctx and user_ctx.strip():
-                mem_parts.append(f"[USER={last_user_name}]\n{user_ctx.strip()}")
-
-            # 2) Assistant self-memory (only when query is about the bot, and enabled)
-            if bool(getattr(config, "MEMORY_INCLUDE_ASSISTANT_CONTEXT", True)):
-                try:
-                    compact_u = re.sub(r"\s+", "", str(last_user_msg or ""))
-                    ai_name = str(getattr(config, "AI_NAME", "") or "").strip()
-                    compact_ai = re.sub(r"\s+", "", ai_name)
-                    asked_about_ai = False
-                    if compact_ai and compact_ai in compact_u:
-                        asked_about_ai = True
-                    if any(k in compact_u for k in ("너", "너가", "너는", "너의", "당신", "니가", "넌")):
-                        asked_about_ai = True
-
-                    if asked_about_ai and ai_name:
-                        ai_ctx = await asyncio.to_thread(
-                            self.memory_manager.get_memory_context, last_user_msg, ai_name
-                        )
-                        if ai_ctx and ai_ctx.strip():
-                            mem_parts.append(f"[ASSISTANT={ai_name}]\n{ai_ctx.strip()}")
-                except Exception:
-                    pass
-
-            memory_context = "\n\n".join(mem_parts).strip()
             dt = time.perf_counter() - t0
             lat = self._active_latency
             if lat:
