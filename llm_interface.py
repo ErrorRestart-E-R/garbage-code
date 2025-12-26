@@ -275,6 +275,7 @@ async def get_response_stream(
                 "extra_body": {
                     "top_k": top_k,
                     "repeat_penalty": repeat_penalty,
+                    "reasoning_effort": "low",
                 }
             }
             if tools:
@@ -355,6 +356,7 @@ async def get_response_stream(
                     extra_body={
                         "top_k": top_k,
                         "repeat_penalty": repeat_penalty,
+                        "reasoning_effort": "low",
                     },
                 )
                 async for chunk in stream:
