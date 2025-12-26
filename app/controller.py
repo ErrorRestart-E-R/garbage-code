@@ -33,6 +33,70 @@ class PendingResponse:
     message: str
     history_messages: List[Dict[str, str]]  # OpenAI messages format list
     message_index: int
+    stt_meta: Dict[str, Any]
+
+
+@dataclass
+class TurnLatency:
+    """
+    Turn-level pipeline timing.
+
+    All timestamps use time.perf_counter() for monotonic duration math.
+    """
+    turn_id: int
+    user_speaker: str = ""
+    user_text: str = ""
+
+    # STT (from STT subprocess)
+    stt_latency_s: Optional[float] = None          # transcription compute time
+    stt_audio_s: Optional[float] = None            # audio duration
+    stt_queue_delay_s: Optional[float] = None      # silence->transcribe dispatch delay (usually ~0)
+
+    # Overall turn markers
+    turn_start_ts: float = 0.0                     # response_worker starts processing this turn
+
+    # Memory retrieval
+    mem_search_s: Optional[float] = None
+
+    # LLM streaming
+    llm_start_ts: Optional[float] = None
+    llm_first_chunk_ts: Optional[float] = None
+    llm_end_ts: Optional[float] = None
+
+    # TTS first-audio timing (first chunk only)
+    tts_first_chunk_enqueued_ts: Optional[float] = None
+    tts_first_request_start_ts: Optional[float] = None
+    tts_first_request_end_ts: Optional[float] = None
+    tts_first_audio_start_ts: Optional[float] = None
+
+    # Playback completion
+    playback_end_ts: Optional[float] = None
+
+    # Helpers
+    def _dur(self, a: Optional[float], b: Optional[float]) -> Optional[float]:
+        if a is None or b is None:
+            return None
+        try:
+            return float(b - a)
+        except Exception:
+            return None
+
+    def llm_ttfb_s(self) -> Optional[float]:
+        return self._dur(self.llm_start_ts, self.llm_first_chunk_ts)
+
+    def llm_total_s(self) -> Optional[float]:
+        return self._dur(self.llm_start_ts, self.llm_end_ts)
+
+    def tts_queue_to_audio_s(self) -> Optional[float]:
+        return self._dur(self.tts_first_chunk_enqueued_ts, self.tts_first_audio_start_ts)
+
+    def tts_req_to_audio_s(self) -> Optional[float]:
+        return self._dur(self.tts_first_request_start_ts, self.tts_first_audio_start_ts)
+
+    def e2e_first_audio_s(self) -> Optional[float]:
+        if not self.turn_start_ts:
+            return None
+        return self._dur(self.turn_start_ts, self.tts_first_audio_start_ts)
 
 
 class ResponsePhase(str, Enum):
@@ -125,8 +189,13 @@ class ConversationController:
         self._response_phase: ResponsePhase = ResponsePhase.IDLE
         self._active_turn_token: int = 0
         self._barge_in_deadline_ts: float = 0.0
-        self._stt_buffer_during_playback: list[tuple[str, str]] = []  # (user_name, text)
+        self._stt_buffer_during_playback: list[tuple[str, str, dict]] = []  # (user_name, text, stt_meta)
         self._active_tts_task: Optional[asyncio.Task] = None
+
+        # Latency tracking
+        self._stt_meta_by_message_index: dict[int, dict] = {}
+        self._latency_by_turn_id: dict[int, TurnLatency] = {}
+        self._active_latency: Optional[TurnLatency] = None
 
         # STT Result queue (multiprocessing)
         self.result_queue: Optional[multiprocessing.Queue] = None
@@ -155,6 +224,18 @@ class ConversationController:
                 async def _handle_result(r: dict):
                     user_id = r.get("user_id")
                     user_text = r.get("text", "")
+
+                    # STT metrics (best-effort)
+                    stt_meta = {}
+                    try:
+                        stt_meta = {
+                            "stt_latency_s": r.get("stt_latency_s", None),
+                            "stt_audio_s": r.get("stt_audio_s", None),
+                            "stt_queue_delay_s": r.get("stt_queue_delay_s", None),
+                            "stt_rms": r.get("stt_rms", None),
+                        }
+                    except Exception:
+                        stt_meta = {}
 
                     user_name = "Unknown"
                     if user_id:
@@ -188,7 +269,7 @@ class ConversationController:
                     except Exception:
                         is_playing_now = False
                     if self.is_responding and (self._response_phase == ResponsePhase.PLAYING or is_playing_now):
-                        self._stt_buffer_during_playback.append((user_name, user_text))
+                        self._stt_buffer_during_playback.append((user_name, user_text, stt_meta))
                         logger.debug(
                             f"[BARGE-IN] Buffered STT during PLAYING. buffered={len(self._stt_buffer_during_playback)}"
                         )
@@ -197,6 +278,15 @@ class ConversationController:
                     # 3) Normal path: store to history immediately.
                     self.history.add(user_name, user_text)
                     self.message_counter += 1
+                    # Attach STT meta to this message index (best-effort)
+                    try:
+                        self._stt_meta_by_message_index[self.message_counter] = stt_meta or {}
+                        # Prevent unbounded growth
+                        if len(self._stt_meta_by_message_index) > 200:
+                            for k in sorted(self._stt_meta_by_message_index.keys())[:-150]:
+                                self._stt_meta_by_message_index.pop(k, None)
+                    except Exception:
+                        pass
                     logger.debug(f"History: Added message #{self.message_counter} from {user_name}")
 
                     # 4) If we are in PREPLAY (LLM/TTS before first playback) and a new STT arrives,
@@ -266,11 +356,17 @@ class ConversationController:
                     await asyncio.sleep(config.MIN_RESPONSE_INTERVAL - time_since_last)
 
                 participant_count = self.history.get_participant_count()
+                stt_meta = {}
+                try:
+                    stt_meta = dict(self._stt_meta_by_message_index.get(current_index, {}) or {})
+                except Exception:
+                    stt_meta = {}
                 pending = PendingResponse(
                     speaker=current_speaker,
                     message=current_message,
                     history_messages=messages,
                     message_index=current_index,
+                    stt_meta=stt_meta,
                 )
                 await self.response_queue.put((pending, participant_count))
                 logger.debug(f"Message #{current_index} queued for LLM")
@@ -292,6 +388,25 @@ class ConversationController:
                     self._active_turn_token = token
                     self._response_phase = ResponsePhase.PREPLAY
                     self._stt_buffer_during_playback = []
+
+                    # Start latency tracking for this turn (best-effort)
+                    stt_meta = {}
+                    try:
+                        stt_meta = dict(getattr(pending, "stt_meta", {}) or {})
+                    except Exception:
+                        stt_meta = {}
+                    lat = TurnLatency(
+                        turn_id=pending.message_index,
+                        user_speaker=str(getattr(pending, "speaker", "") or ""),
+                        user_text=str(getattr(pending, "message", "") or ""),
+                        stt_latency_s=stt_meta.get("stt_latency_s", None),
+                        stt_audio_s=stt_meta.get("stt_audio_s", None),
+                        stt_queue_delay_s=stt_meta.get("stt_queue_delay_s", None),
+                        turn_start_ts=time.perf_counter(),
+                    )
+                    self._latency_by_turn_id[pending.message_index] = lat
+                    self._active_latency = lat
+
                     full_response = await self._execute_response(
                         messages=pending.history_messages,
                         participant_count=participant_count,
@@ -301,15 +416,49 @@ class ConversationController:
                     if full_response and full_response.strip():
                         self.history.add_ai_response(full_response)
                         self.last_response_time = time.time()
-                        await self.memory_queue.put((pending.speaker, pending.message))
+
+                        # Memory saving policy
+                        save_mode = str(getattr(config, "MEMORY_SAVE_MODE", "heuristic") or "heuristic").strip().lower()
+                        enq_ts = time.perf_counter()
+                        if save_mode == "reflect":
+                            # Let the LLM decide what is important to store from the full turn (user+assistant).
+                            ai_name = str(getattr(config, "AI_NAME", "LLM") or "LLM").strip()
+                            await self.memory_queue.put(
+                                {
+                                    "kind": "turn_reflection",
+                                    "turn_id": pending.message_index,
+                                    "user_name": pending.speaker,
+                                    "user_text": pending.message,
+                                    "assistant_name": ai_name,
+                                    "assistant_text": full_response.strip(),
+                                    "enq_ts": enq_ts,
+                                }
+                            )
+                        else:
+                            # Backward compatible (heuristic): store only when likely useful.
+                            await self.memory_queue.put((pending.message_index, pending.speaker, pending.message, enq_ts))
+
+                            # (heuristic) save assistant's own durable facts
+                            try:
+                                if bool(getattr(config, "MEMORY_SAVE_ASSISTANT_FACTS", True)):
+                                    if self.memory_manager.should_save_assistant_memory(pending.message, full_response):
+                                        ai_name = str(getattr(config, "AI_NAME", "LLM") or "LLM").strip()
+                                        ai_text = f"{ai_name}: {full_response.strip()}"
+                                        await self.memory_queue.put((pending.message_index, ai_name, ai_text, time.perf_counter()))
+                            except Exception:
+                                pass
                     else:
                         print("  [No response]")
                 finally:
                     # Flush any STT buffered during playback (PLAYING) AFTER committing AI response
                     if self._stt_buffer_during_playback:
-                        for user_name, user_text in self._stt_buffer_during_playback:
+                        for user_name, user_text, stt_meta in self._stt_buffer_during_playback:
                             self.history.add(user_name, user_text)
                             self.message_counter += 1
+                            try:
+                                self._stt_meta_by_message_index[self.message_counter] = stt_meta or {}
+                            except Exception:
+                                pass
                         logger.info(
                             f"[BARGE-IN] Flushed buffered STT after playback: +{len(self._stt_buffer_during_playback)}"
                         )
@@ -320,6 +469,45 @@ class ConversationController:
                     self._active_turn_token = 0
                     self.is_responding = False
 
+                    # Turn summary log (best-effort, one line)
+                    lat = self._active_latency
+                    self._active_latency = None
+                    if lat:
+                        try:
+                            if bool(getattr(config, "PIPELINE_METRICS_ENABLED", True)):
+                                stt_s = lat.stt_latency_s
+                                stt_audio_s = lat.stt_audio_s
+                                mem_s = lat.mem_search_s
+                                llm_ttfb = lat.llm_ttfb_s()
+                                llm_total = lat.llm_total_s()
+                                tts_first = lat.tts_req_to_audio_s() or lat.tts_queue_to_audio_s()
+                                e2e_first = lat.e2e_first_audio_s()
+
+                                parts: list[str] = [f"[PIPELINE] turn={lat.turn_id}"]
+                                parts.append(f"stt={stt_s:.2f}s" if isinstance(stt_s, (int, float)) else "stt=?")
+                                if isinstance(stt_audio_s, (int, float)):
+                                    parts.append(f"stt_audio={stt_audio_s:.2f}s")
+                                parts.append(f"mem={mem_s:.2f}s" if isinstance(mem_s, (int, float)) else "mem=skip")
+                                parts.append(
+                                    f"llm_ttfb={llm_ttfb:.2f}s" if isinstance(llm_ttfb, (int, float)) else "llm_ttfb=?"
+                                )
+                                parts.append(
+                                    f"llm_total={llm_total:.2f}s" if isinstance(llm_total, (int, float)) else "llm_total=?"
+                                )
+                                parts.append(
+                                    f"tts_first_audio={tts_first:.2f}s"
+                                    if isinstance(tts_first, (int, float))
+                                    else "tts_first_audio=?"
+                                )
+                                parts.append(
+                                    f"e2e_first_audio={e2e_first:.2f}s"
+                                    if isinstance(e2e_first, (int, float))
+                                    else "e2e_first_audio=?"
+                                )
+                                logger.info(" ".join(parts))
+                        except Exception:
+                            pass
+
             except Exception as e:
                 logger.error(f"Response worker error: {e}", exc_info=True)
                 self.is_responding = False
@@ -329,11 +517,77 @@ class ConversationController:
         logger.info("Memory worker started (sequential queue processing)")
         while True:
             try:
-                user_name, user_text = await self.memory_queue.get()
+                item = await self.memory_queue.get()
+                # New: turn reflection job (dict)
+                if isinstance(item, dict) and item.get("kind") == "turn_reflection":
+                    turn_id = item.get("turn_id", None)
+                    user_name = str(item.get("user_name", "") or "")
+                    user_text = str(item.get("user_text", "") or "")
+                    assistant_name = str(item.get("assistant_name", "") or "")
+                    assistant_text = str(item.get("assistant_text", "") or "")
+                    enq_ts = item.get("enq_ts", None)
+                    meta = item.get("metadata", None)
+
+                    t0 = time.perf_counter()
+                    try:
+                        await asyncio.to_thread(
+                            self.memory_manager.save_turn_reflection,
+                            turn_id,
+                            user_name,
+                            user_text,
+                            assistant_name,
+                            assistant_text,
+                            meta if isinstance(meta, dict) else None,
+                        )
+                    except Exception as e:
+                        logger.error(f"Memory turn_reflection error: {e}")
+                    dt = time.perf_counter() - t0
+                    try:
+                        if bool(getattr(config, "PIPELINE_METRICS_ENABLED", True)):
+                            qd = None
+                            if isinstance(enq_ts, (int, float)) and enq_ts > 0:
+                                qd = max(0.0, float(t0) - float(enq_ts))
+                            qd_str = f"{qd:.2f}s" if isinstance(qd, (int, float)) else "?"
+                            logger.info(f"[PIPELINE][MEM] turn={turn_id} queue={qd_str} reflect={dt:.2f}s")
+                    except Exception:
+                        pass
+
+                    self.memory_queue.task_done()
+                    continue
+
+                # Backward compatible: support both (user_name, user_text) and (turn_id, user_name, user_text, enq_ts)
+                turn_id = None
+                user_name = ""
+                user_text = ""
+                enq_ts = None
+                if isinstance(item, tuple) and len(item) == 4:
+                    turn_id, user_name, user_text, enq_ts = item
+                elif isinstance(item, tuple) and len(item) == 2:
+                    user_name, user_text = item
+                else:
+                    # unknown format
+                    self.memory_queue.task_done()
+                    continue
+
                 try:
                     # Avoid memory pollution / noisy extraction on irrelevant messages
                     if self.memory_manager.should_save_memory(user_text):
+                        t0 = time.perf_counter()
                         await asyncio.to_thread(self.memory_manager.save_memory, user_name, user_text)
+                        dt = time.perf_counter() - t0
+                        # One-line completion log (requested)
+                        try:
+                            if bool(getattr(config, "PIPELINE_METRICS_ENABLED", True)):
+                                qd = None
+                                if isinstance(enq_ts, (int, float)) and enq_ts > 0:
+                                    qd = max(0.0, float(t0) - float(enq_ts))
+                                qd_str = f"{qd:.2f}s" if isinstance(qd, (int, float)) else "?"
+                                if turn_id is not None:
+                                    logger.info(f"[PIPELINE][MEM] turn={turn_id} queue={qd_str} save={dt:.2f}s")
+                                else:
+                                    logger.info(f"[PIPELINE][MEM] queue={qd_str} save={dt:.2f}s")
+                        except Exception:
+                            pass
                 except Exception as e:
                     logger.error(f"Memory save error: {e}")
                 self.memory_queue.task_done()
@@ -715,9 +969,42 @@ class ConversationController:
         memory_context = ""
         # Avoid polluting the prompt with long-term memory while a game is active (default).
         if last_user_msg and (not active_game_id):
-            memory_context = await asyncio.to_thread(
+            t0 = time.perf_counter()
+            mem_parts: list[str] = []
+
+            # 1) User memory (always, when enabled)
+            user_ctx = await asyncio.to_thread(
                 self.memory_manager.get_memory_context, last_user_msg, last_user_name
             )
+            if user_ctx and user_ctx.strip():
+                mem_parts.append(f"[USER={last_user_name}]\n{user_ctx.strip()}")
+
+            # 2) Assistant self-memory (only when query is about the bot, and enabled)
+            if bool(getattr(config, "MEMORY_INCLUDE_ASSISTANT_CONTEXT", True)):
+                try:
+                    compact_u = re.sub(r"\s+", "", str(last_user_msg or ""))
+                    ai_name = str(getattr(config, "AI_NAME", "") or "").strip()
+                    compact_ai = re.sub(r"\s+", "", ai_name)
+                    asked_about_ai = False
+                    if compact_ai and compact_ai in compact_u:
+                        asked_about_ai = True
+                    if any(k in compact_u for k in ("너", "너가", "너는", "너의", "당신", "니가", "넌")):
+                        asked_about_ai = True
+
+                    if asked_about_ai and ai_name:
+                        ai_ctx = await asyncio.to_thread(
+                            self.memory_manager.get_memory_context, last_user_msg, ai_name
+                        )
+                        if ai_ctx and ai_ctx.strip():
+                            mem_parts.append(f"[ASSISTANT={ai_name}]\n{ai_ctx.strip()}")
+                except Exception:
+                    pass
+
+            memory_context = "\n\n".join(mem_parts).strip()
+            dt = time.perf_counter() - t0
+            lat = self._active_latency
+            if lat:
+                lat.mem_search_s = dt
             # NOTE:
             # 프롬프트가 컨텍스트 한도를 초과하면 llm_interface에서 재시도/축소가 필요합니다.
 
@@ -786,6 +1073,10 @@ class ConversationController:
                     chunk_text = f"{pending_prefix} {chunk_text}".strip()
                     pending_prefix = ""
 
+                # First TTS chunk enqueue timing (best-effort)
+                lat = self._active_latency
+                if lat and bool(getattr(config, "PIPELINE_METRICS_ENABLED", True)) and lat.tts_first_chunk_enqueued_ts is None:
+                    lat.tts_first_chunk_enqueued_ts = time.perf_counter()
                 await tts_queue.put(chunk_text)
 
             # 2) Force flush remainder (end of stream)
@@ -797,9 +1088,15 @@ class ConversationController:
                     if pending_prefix:
                         tail = f"{pending_prefix} {tail}".strip()
                         pending_prefix = ""
+                    lat = self._active_latency
+                    if lat and bool(getattr(config, "PIPELINE_METRICS_ENABLED", True)) and lat.tts_first_chunk_enqueued_ts is None:
+                        lat.tts_first_chunk_enqueued_ts = time.perf_counter()
                     await tts_queue.put(tail)
                 elif pending_prefix:
                     # Rare: reply ended with only "1." etc. Best-effort speak it.
+                    lat = self._active_latency
+                    if lat and bool(getattr(config, "PIPELINE_METRICS_ENABLED", True)) and lat.tts_first_chunk_enqueued_ts is None:
+                        lat.tts_first_chunk_enqueued_ts = time.perf_counter()
                     await tts_queue.put(pending_prefix)
                     pending_prefix = ""
 
@@ -812,6 +1109,11 @@ class ConversationController:
         control_checked = False
         control_buf = ""
         control_cmd = None
+
+        # Mark LLM start BEFORE awaiting the first chunk (best-effort)
+        lat = self._active_latency
+        if lat and bool(getattr(config, "PIPELINE_METRICS_ENABLED", True)) and lat.llm_start_ts is None:
+            lat.llm_start_ts = time.perf_counter()
 
         async for chunk in get_response_stream(
             messages=messages,
@@ -861,10 +1163,14 @@ class ConversationController:
             if first_chunk:
                 print(f"{config.AI_NAME}: ", end="", flush=True)
                 first_chunk = False
+                if lat and lat.llm_first_chunk_ts is None:
+                    lat.llm_first_chunk_ts = time.perf_counter()
 
             print(out, end="", flush=True)
             full_response += out
             buffer += out
+            if lat and lat.llm_first_chunk_ts is None and out.strip():
+                lat.llm_first_chunk_ts = time.perf_counter()
 
             # Drain buffer to TTS queue continuously (delimiter-based only)
             await _drain_buffer_to_tts_queue(force=False)
@@ -885,6 +1191,11 @@ class ConversationController:
 
         if not first_chunk:
             print()
+
+        # Mark LLM end immediately after streaming completes (best-effort)
+        lat = self._active_latency
+        if lat and bool(getattr(config, "PIPELINE_METRICS_ENABLED", True)) and lat.llm_end_ts is None and lat.llm_start_ts is not None:
+            lat.llm_end_ts = time.perf_counter()
 
         # If we were cancelled (barge-in/interrupt) before finishing, stop immediately.
         if run_token != self._run_token:
@@ -947,10 +1258,21 @@ class ConversationController:
             text = text.strip()
             if not text:
                 continue
+
+            # First TTS request timing (best-effort, first chunk only)
+            lat = self._active_latency
+            if lat and lat.tts_first_chunk_enqueued_ts is None:
+                # Fallback: if controller didn't mark enqueue, mark at dequeue time.
+                lat.tts_first_chunk_enqueued_ts = time.perf_counter()
+            if lat and lat.tts_first_request_start_ts is None:
+                lat.tts_first_request_start_ts = time.perf_counter()
             try:
                 if run_token != self._run_token:
                     continue
                 wav_data = await self.tts.get_async(text, config.TTS_LANG)
+                lat = self._active_latency
+                if lat and lat.tts_first_request_end_ts is None and lat.tts_first_request_start_ts is not None:
+                    lat.tts_first_request_end_ts = time.perf_counter()
                 if run_token != self._run_token:
                     continue
                 if wav_data:
@@ -965,11 +1287,17 @@ class ConversationController:
         # This is the boundary between PREPLAY(A/B) and PLAYING(C).
         if self.is_responding and self._response_phase == ResponsePhase.PREPLAY:
             self._response_phase = ResponsePhase.PLAYING
+        lat = self._active_latency
+        if lat and lat.tts_first_audio_start_ts is None:
+            lat.tts_first_audio_start_ts = time.perf_counter()
         if self.lipsync:
             await self.lipsync.start(wav_bytes)
 
     async def _on_tts_audio_end(self):
         if self.lipsync:
             await self.lipsync.stop()
+        lat = self._active_latency
+        if lat:
+            lat.playback_end_ts = time.perf_counter()
 
 

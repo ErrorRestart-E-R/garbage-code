@@ -5,6 +5,7 @@ import numpy as np
 from logger import setup_logger
 import os
 import config
+from typing import Optional
 logger = setup_logger(__name__, config.LOG_FILE, config.LOG_LEVEL)
 
 # Reduce noisy library warnings in STT subprocess console
@@ -113,9 +114,10 @@ def run_stt_process(audio_queue, result_queue, command_queue, status_queue=None)
                     # Silence detected.
                     if len(user_speech_buffers[user_id]) > 0:
                         # End of speech segment -> Transcribe
+                        segment_end_ts = time.time()
                         audio_to_transcribe = user_speech_buffers[user_id][:]
                         user_speech_buffers[user_id] = bytearray()
-                        transcribe_and_send(model, user_id, audio_to_transcribe, result_queue)
+                        transcribe_and_send(model, user_id, audio_to_transcribe, result_queue, segment_end_ts=segment_end_ts)
         except Exception as e:
             print(f"Error in STT loop: {str(e)}")
 
@@ -132,7 +134,7 @@ def run_stt_process(audio_queue, result_queue, command_queue, status_queue=None)
             del user_speech_buffers[uid]
             del user_last_activity[uid]
 
-def transcribe_and_send(model, user_id, audio_data, result_queue):
+def transcribe_and_send(model, user_id, audio_data, result_queue, segment_end_ts: Optional[float] = None):
     """Enhanced transcription with accuracy optimizations for noisy Discord audio."""
     if len(audio_data) < config.STT_MIN_AUDIO_LENGTH:  # Ignore very short audio
         return
@@ -162,7 +164,9 @@ def transcribe_and_send(model, user_id, audio_data, result_queue):
         if peak > 0:
             data_f32 = (data_f32 / peak) * 0.95
     
-    start_time = time.time()
+    # Measure STT inference time precisely
+    start_time = time.perf_counter()
+    start_time_wall = time.time()
     try:
         # Enhanced transcription with all accuracy parameters
         segments, info = model.transcribe(
@@ -220,7 +224,7 @@ def transcribe_and_send(model, user_id, audio_data, result_queue):
                 logprob_sum += float(lp)
                 logprob_count += 1
         
-        end_time = time.time()
+        end_time = time.perf_counter()
         duration = end_time - start_time
         
         text = text.strip()
@@ -237,10 +241,19 @@ def transcribe_and_send(model, user_id, audio_data, result_queue):
                     return
             logger.debug(f"Transcription successful for user {user_id}")
             logger.debug(f"Transcription: {text} (avg no_speech_prob: {avg_no_speech:.2f}, latency: {duration:.2f}s)")
+            queue_delay_s = None
+            if isinstance(segment_end_ts, (int, float)) and segment_end_ts > 0:
+                queue_delay_s = float(max(0.0, start_time_wall - float(segment_end_ts)))
             result_queue.put({
                 "user_id": user_id,
                 "text": text,
-                "latency": f"{duration:.3f}s"
+                # Backward compatible string
+                "latency": f"{duration:.3f}s",
+                # Numeric metrics for pipeline timing
+                "stt_latency_s": float(duration),
+                "stt_audio_s": float(duration_seconds),
+                "stt_queue_delay_s": float(queue_delay_s) if queue_delay_s is not None else None,
+                "stt_rms": float(rms),
             })
     except Exception as e:
         print(f"Transcription error: {e}")
