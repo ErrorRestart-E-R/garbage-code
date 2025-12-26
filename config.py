@@ -182,14 +182,22 @@ VTS_LIPSYNC_MIN = 0.0
 VTS_LIPSYNC_MAX = 1.0
 
 # ============================================================================
-# 7. 메모리 시스템 (Mem0 + Ollama)
+# 7. 메모리 시스템 (Mem0)
 # ============================================================================
 ENABLE_MEMORY = True  # 메모리 시스템 활성화/비활성화
 MEMORY_DB_PATH = "./memory_db"
-MEMORY_LLM_MODEL = "granite3.3:2b"
-MEMORY_EMBEDDING_MODEL = "embeddinggemma:latest"
+MEMORY_LLM_MODEL = "granite3.3:2b"  # (레거시/참고용) Ollama 사용 시의 모델명
+MEMORY_EMBEDDING_MODEL = "embeddinggemma:latest"  # (레거시/참고용) Ollama 사용 시의 모델명
 OLLAMA_LLM_URL = "http://localhost:11434"
 OLLAMA_EMBEDDING_URL = "http://192.168.45.28:11434"
+
+# Mem0를 llama.cpp(OpenAI-compatible)로 통일
+# - LLM: 메인 LLM 서버(LLAMA_CPP_BASE_URL) 사용
+# - Embedder: 별도 임베딩 서버 사용(사용자 요청: 192.168.45.28:5002/v1)
+MEM0_LLM_BASE_URL = LLAMA_CPP_BASE_URL
+MEM0_LLM_MODEL = LLM_MODEL_NAME  # llama.cpp는 보통 "default"
+MEM0_EMBEDDING_BASE_URL = "http://192.168.45.28:5002/v1"
+MEM0_EMBEDDING_MODEL = "default"
 
 MEM0_CONFIG = {
     "version": "v1.1",
@@ -201,20 +209,25 @@ MEM0_CONFIG = {
         },
     },
     "llm": {
-        "provider": "ollama",
+        # Use OpenAI-compatible llama.cpp via mem0's LMStudio client wrapper
+        # (This sets response_format to JSON object by default, which fits our fact-extraction prompt.)
+        "provider": "lmstudio",
         "config": {
-            "model": MEMORY_LLM_MODEL,
+            "model": MEM0_LLM_MODEL,
             # Fact extraction should be deterministic to avoid duplicated / hallucinated facts.
             "temperature": 0.0,
             "max_tokens": 512,
-            "ollama_base_url": OLLAMA_LLM_URL,
+            "lmstudio_base_url": MEM0_LLM_BASE_URL,
+            "api_key": LLAMA_CPP_API_KEY,
         },
     },
     "embedder": {
-        "provider": "ollama",
+        # Use OpenAI-compatible embeddings server (llama.cpp)
+        "provider": "lmstudio",
         "config": {
-            "model": MEMORY_EMBEDDING_MODEL,
-            "ollama_base_url": OLLAMA_EMBEDDING_URL,
+            "model": MEM0_EMBEDDING_MODEL,
+            "lmstudio_base_url": MEM0_EMBEDDING_BASE_URL,
+            "api_key": LLAMA_CPP_API_KEY,
         },
     },
     "custom_fact_extraction_prompt": """

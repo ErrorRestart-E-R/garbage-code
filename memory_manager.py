@@ -67,7 +67,29 @@ class MemoryManager:
         
         try:
             self.memory = Memory.from_config(config.MEM0_CONFIG)
-            logger.info(f"Mem0 initialized with Ollama (LLM: {config.MEMORY_LLM_MODEL}, Embed: {config.MEMORY_EMBEDDING_MODEL})")
+            # Best-effort provider/base_url summary
+            try:
+                llm = getattr(config, "MEM0_CONFIG", {}).get("llm", {}) if isinstance(getattr(config, "MEM0_CONFIG", None), dict) else {}
+                emb = getattr(config, "MEM0_CONFIG", {}).get("embedder", {}) if isinstance(getattr(config, "MEM0_CONFIG", None), dict) else {}
+                llm_provider = (llm.get("provider") or "unknown") if isinstance(llm, dict) else "unknown"
+                emb_provider = (emb.get("provider") or "unknown") if isinstance(emb, dict) else "unknown"
+                llm_cfg = (llm.get("config") or {}) if isinstance(llm, dict) else {}
+                emb_cfg = (emb.get("config") or {}) if isinstance(emb, dict) else {}
+                llm_url = (
+                    llm_cfg.get("openai_base_url")
+                    or llm_cfg.get("lmstudio_base_url")
+                    or llm_cfg.get("ollama_base_url")
+                    or "unknown"
+                )
+                emb_url = (
+                    emb_cfg.get("openai_base_url")
+                    or emb_cfg.get("lmstudio_base_url")
+                    or emb_cfg.get("ollama_base_url")
+                    or "unknown"
+                )
+                logger.info(f"Mem0 initialized (llm={llm_provider} url={llm_url}, embedder={emb_provider} url={emb_url})")
+            except Exception:
+                logger.info("Mem0 initialized")
         except Exception as e:
             logger.error(f"Mem0 initialization failed: {e}")
             self.memory = None
@@ -147,18 +169,37 @@ class MemoryManager:
             # Always print completion + stored sentences (requested)
             # NOTE: mem0 may extract facts and store them as separate "memory" items.
             try:
+                # Normalize response shape:
+                # - mem0 v1.x: {"results": [...]}
+                # - some legacy/platform-like shapes: [...]
                 stored_items = []
                 if isinstance(result, dict):
                     stored_items = list(result.get("results", []) or [])
+                elif isinstance(result, list):
+                    stored_items = list(result or [])
 
                 # Extract (memory_text, memory_id) pairs
                 extracted: list[tuple[str, str]] = []
+                events: list[str] = []
                 for item in stored_items:
                     if not isinstance(item, dict):
                         continue
                     # Common response fields: {"id": "...", "memory": "...", "event": "ADD"}
                     mid = str(item.get("id") or item.get("memory_id") or "").strip()
-                    m = item.get("memory") or item.get("text") or item.get("fact") or ""
+                    ev = str(item.get("event") or item.get("type") or "").strip().upper()
+                    if ev:
+                        events.append(ev)
+
+                    data = item.get("data") if isinstance(item.get("data"), dict) else {}
+                    m = (
+                        item.get("memory")
+                        or item.get("text")
+                        or item.get("fact")
+                        or (data.get("memory") if isinstance(data, dict) else None)
+                        or (data.get("text") if isinstance(data, dict) else None)
+                        or (data.get("fact") if isinstance(data, dict) else None)
+                        or ""
+                    )
                     m = str(m).strip() if m is not None else ""
                     if m:
                         extracted.append((m, mid))
@@ -199,7 +240,21 @@ class MemoryManager:
                     for s in saved_texts:
                         print(f"저장된 문장: {s}")
                 else:
-                    print("저장된 문장: (없음)")
+                    # Most common reasons:
+                    # - event=NONE (already stored / no change)
+                    # - extraction returned empty facts per prompt
+                    reason = ""
+                    try:
+                        evset = sorted(set(events)) if events else []
+                        if "NONE" in evset:
+                            reason = " (변경 없음: 이미 저장된 내용이거나 새 사실이 없음)"
+                        elif evset:
+                            reason = f" (event={','.join(evset)})"
+                        else:
+                            reason = " (추출된 사실이 없거나 중복으로 스킵됨)"
+                    except Exception:
+                        reason = ""
+                    print(f"저장된 문장: (없음){reason}")
             except Exception:
                 # Fallback: still print completion
                 try:
