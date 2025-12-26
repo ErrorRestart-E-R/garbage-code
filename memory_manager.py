@@ -86,6 +86,20 @@ class MemoryManager:
         # Normalize whitespace for pattern checks
         compact = re.sub(r"\s+", "", t)
 
+        # 0) 질문/요청은 저장하지 않음 (프롬프트 규칙과 일치)
+        # - 예: "...기억해", "...알려줘", "...소개해줘"
+        if "?" in t:
+            return False
+        if re.search(r"(알려\s*줘|말해\s*줘|소개\s*해|소개\s*해줘|설명\s*해|설명\s*해줘|기억\s*해|기억\s*해줘|기억\s*하자|기억\s*하라|뭐야|뭔지)", t):
+            return False
+
+        # 1) 2인칭(너/당신)으로 AI에 대해 말하는 문장은 "유저 사실"로 저장하면 오염되기 쉬움
+        # - 예: "너가 가장 좋아하는 과일이 사과야" (유저 사실 아님)
+        # 단, 같은 문장에 1인칭(내가/나는/저는 등)이 함께 있으면 유저 사실일 가능성이 있어 허용합니다.
+        has_first_person = bool(re.search(r"(내가|나는|저는|제가|내\s*)", t))
+        if (not has_first_person) and re.search(r"(너가|너는|너의|너|니가|넌|당신)", t):
+            return False
+
         # Strong signals (allow optional spaces between syllables)
         if re.search(r"생\s*일", t):
             return True
@@ -93,13 +107,15 @@ class MemoryManager:
             return True
         if re.search(r"내\s*이\s*름", t) or "이름은" in compact:
             return True
-        if re.search(r"(좋아|싫어|선호|취향)", t):
+
+        # 나머지 범주는 1인칭이 함께 있을 때만 저장(오염 방지)
+        if has_first_person and re.search(r"(좋아|싫어|선호|취향)", t):
             return True
-        if re.search(r"(알레르기|못먹어|안먹어)", t):
+        if has_first_person and re.search(r"(알레르기|못먹어|안먹어)", t):
             return True
-        if re.search(r"(목표|계획|예정|할거야|하려고)", t):
+        if has_first_person and re.search(r"(목표|계획|예정|할거야|하려고)", t):
             return True
-        if re.search(r"(사는곳|살아|거주|직업|회사|학교)", t):
+        if has_first_person and re.search(r"(사는곳|살아|거주|직업|회사|학교)", t):
             return True
 
         return False
@@ -119,8 +135,11 @@ class MemoryManager:
             return None
             
         try:
+            # Match the examples in config.MEM0_CONFIG["custom_fact_extraction_prompt"]
+            # (e.g., "홍길동: 나는 매운 음식 좋아해")
+            save_text = f"{user_name}: {text.strip()}"
             result = self.memory.add(
-                text,
+                save_text,
                 user_id=user_name,
                 metadata={"source": "voice_chat"}
             )
@@ -145,6 +164,12 @@ class MemoryManager:
                 # Terminal output (Korean)
                 print("저장 완료")
                 print(f"입력 문장: {text.strip()}")
+                # De-duplicate for readability (keep order)
+                if saved_texts:
+                    try:
+                        saved_texts = list(dict.fromkeys(saved_texts))
+                    except Exception:
+                        pass
                 if saved_texts:
                     for s in saved_texts:
                         print(f"저장된 문장: {s}")

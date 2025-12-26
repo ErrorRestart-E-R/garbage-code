@@ -253,6 +253,8 @@ def transcribe_and_send(model, user_id, audio_data, result_queue, segment_end_ts
                 "stt_latency_s": float(duration),
                 "stt_audio_s": float(duration_seconds),
                 "stt_queue_delay_s": float(queue_delay_s) if queue_delay_s is not None else None,
+                # Wall-clock timestamp for "utterance end -> first audio" metric (cross-process safe)
+                "stt_end_ts": float(segment_end_ts) if isinstance(segment_end_ts, (int, float)) and segment_end_ts > 0 else None,
                 "stt_rms": float(rms),
             })
     except Exception as e:

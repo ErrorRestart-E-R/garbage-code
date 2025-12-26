@@ -51,6 +51,7 @@ class TurnLatency:
     stt_latency_s: Optional[float] = None          # transcription compute time
     stt_audio_s: Optional[float] = None            # audio duration
     stt_queue_delay_s: Optional[float] = None      # silence->transcribe dispatch delay (usually ~0)
+    stt_end_ts: Optional[float] = None             # wall-clock time.time() when "utterance end" detected in STT proc
 
     # Overall turn markers
     turn_start_ts: float = 0.0                     # response_worker starts processing this turn
@@ -68,6 +69,7 @@ class TurnLatency:
     tts_first_request_start_ts: Optional[float] = None
     tts_first_request_end_ts: Optional[float] = None
     tts_first_audio_start_ts: Optional[float] = None
+    tts_first_audio_start_wall: Optional[float] = None  # wall-clock time.time() at playback start (main process)
 
     # Playback completion
     playback_end_ts: Optional[float] = None
@@ -97,6 +99,20 @@ class TurnLatency:
         if not self.turn_start_ts:
             return None
         return self._dur(self.turn_start_ts, self.tts_first_audio_start_ts)
+
+    def utterance_end_to_first_audio_s(self) -> Optional[float]:
+        """
+        Cross-process metric (uses time.time wall clock):
+        STT detected end-of-utterance -> first audio playback start.
+        """
+        if not isinstance(self.stt_end_ts, (int, float)):
+            return None
+        if not isinstance(self.tts_first_audio_start_wall, (int, float)):
+            return None
+        try:
+            return float(self.tts_first_audio_start_wall - self.stt_end_ts)
+        except Exception:
+            return None
 
 
 class ResponsePhase(str, Enum):
@@ -232,6 +248,7 @@ class ConversationController:
                             "stt_latency_s": r.get("stt_latency_s", None),
                             "stt_audio_s": r.get("stt_audio_s", None),
                             "stt_queue_delay_s": r.get("stt_queue_delay_s", None),
+                            "stt_end_ts": r.get("stt_end_ts", None),
                             "stt_rms": r.get("stt_rms", None),
                         }
                     except Exception:
@@ -402,6 +419,7 @@ class ConversationController:
                         stt_latency_s=stt_meta.get("stt_latency_s", None),
                         stt_audio_s=stt_meta.get("stt_audio_s", None),
                         stt_queue_delay_s=stt_meta.get("stt_queue_delay_s", None),
+                        stt_end_ts=stt_meta.get("stt_end_ts", None),
                         turn_start_ts=time.perf_counter(),
                     )
                     self._latency_by_turn_id[pending.message_index] = lat
@@ -453,6 +471,7 @@ class ConversationController:
                                 llm_total = lat.llm_total_s()
                                 tts_first = lat.tts_req_to_audio_s() or lat.tts_queue_to_audio_s()
                                 e2e_first = lat.e2e_first_audio_s()
+                                u2a = lat.utterance_end_to_first_audio_s()
 
                                 parts: list[str] = [f"[PIPELINE] turn={lat.turn_id}"]
                                 parts.append(f"stt={stt_s:.2f}s" if isinstance(stt_s, (int, float)) else "stt=?")
@@ -469,6 +488,11 @@ class ConversationController:
                                     f"tts_first_audio={tts_first:.2f}s"
                                     if isinstance(tts_first, (int, float))
                                     else "tts_first_audio=?"
+                                )
+                                parts.append(
+                                    f"utt_end_to_audio={u2a:.2f}s"
+                                    if isinstance(u2a, (int, float))
+                                    else "utt_end_to_audio=?"
                                 )
                                 parts.append(
                                     f"e2e_first_audio={e2e_first:.2f}s"
@@ -1196,6 +1220,8 @@ class ConversationController:
         lat = self._active_latency
         if lat and lat.tts_first_audio_start_ts is None:
             lat.tts_first_audio_start_ts = time.perf_counter()
+            # wall clock for "utterance end -> audio" metric
+            lat.tts_first_audio_start_wall = time.time()
         if self.lipsync:
             await self.lipsync.start(wav_bytes)
 
